@@ -1,0 +1,12 @@
+D:\RiderProject\TwinShotNet\obj\Release\netstandard2.1\TwinShotNet.csproj.AssemblyReference.cache
+D:\RiderProject\TwinShotNet\obj\Release\netstandard2.1\TwinShotNet.GeneratedMSBuildEditorConfig.editorconfig
+D:\RiderProject\TwinShotNet\obj\Release\netstandard2.1\TwinShotNet.AssemblyInfoInputs.cache
+D:\RiderProject\TwinShotNet\obj\Release\netstandard2.1\TwinShotNet.AssemblyInfo.cs
+D:\RiderProject\TwinShotNet\obj\Release\netstandard2.1\TwinShotNet.csproj.CoreCompileInputs.cache
+D:\RiderProject\TwinShotNet\bin\Release\netstandard2.1\TwinShotNet.deps.json
+D:\RiderProject\TwinShotNet\bin\Release\netstandard2.1\TwinShotNet.dll
+D:\RiderProject\TwinShotNet\bin\Release\netstandard2.1\TwinShotNet.pdb
+D:\RiderProject\TwinShotNet\bin\Release\netstandard2.1\LiteNetLib.dll
+D:\RiderProject\TwinShotNet\obj\Release\netstandard2.1\TwinShot.8C13D80C.Up2Date
+D:\RiderProject\TwinShotNet\obj\Release\netstandard2.1\TwinShotNet.dll
+D:\RiderProject\TwinShotNet\obj\Release\netstandard2.1\TwinShotNet.pdb

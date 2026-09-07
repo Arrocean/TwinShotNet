@@ -1,0 +1,7 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net8.0</TargetFramework></PropertyGroup>
+  <ItemGroup>
+    <Compile Include="../InputSlot.cs" Link="InputSlot.cs" />
+    <Compile Include="../Wire.cs" Link="Wire.cs" />
+  </ItemGroup>
+</Project>

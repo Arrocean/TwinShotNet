@@ -1,0 +1,42 @@
+{
+  "runtimeTarget": {
+    "name": ".NETStandard,Version=v2.1/",
+    "signature": ""
+  },
+  "compilationOptions": {},
+  "targets": {
+    ".NETStandard,Version=v2.1": {},
+    ".NETStandard,Version=v2.1/": {
+      "TwinShotNet/1.0.0": {
+        "dependencies": {
+          "LiteNetLib": "1.3.1"
+        },
+        "runtime": {
+          "TwinShotNet.dll": {}
+        }
+      },
+      "LiteNetLib/1.3.1": {
+        "runtime": {
+          "lib/netstandard2.1/LiteNetLib.dll": {
+            "assemblyVersion": "1.3.1.0",
+            "fileVersion": "1.3.1.0"
+          }
+        }
+      }
+    }
+  },
+  "libraries": {
+    "TwinShotNet/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    },
+    "LiteNetLib/1.3.1": {
+      "type": "package",
+      "serviceable": true,
+      "sha512": "sha512-+O+3P2kvhr1jUOWm1mM1mRVYsnoJ3BDGxGTGhNnWezUzAEXnoomxgC4tMHqGsqQmpd+Fg8VyfxdubFG5BJysAw==",
+      "path": "litenetlib/1.3.1",
+      "hashPath": "litenetlib.1.3.1.nupkg.sha512"
+    }
+  }
+}
