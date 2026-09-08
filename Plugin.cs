@@ -13,7 +13,7 @@ using UnityEngine.SceneManagement;
 
 namespace TwinShotNet;
 
-[BepInPlugin("local.twinshot.net", "Twin Shot Net (Experimental)", "0.4.0")]
+[BepInPlugin("local.twinshot.net", "Twin Shot Net (Experimental)", "0.5.0")]
 public sealed class Plugin : BaseUnityPlugin
 {
     internal static Plugin Instance;
@@ -90,7 +90,7 @@ public sealed class Plugin : BaseUnityPlugin
             }
             catch (Exception ex) { startupHarmony.UnpatchSelf(); Logger.LogError("Optional Steam restart patches rolled back: " + ex); }
         }
-        Logger.LogInfo("TwinShotNet 0.4.0 loaded. F8 opens the network panel.");
+        Logger.LogInfo("TwinShotNet 0.5.0 loaded. F8 opens the network panel.");
     }
 
     private void Open(bool asHost)
