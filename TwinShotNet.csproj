@@ -2,7 +2,8 @@
   <PropertyGroup>
     <TargetFramework>netstandard2.1</TargetFramework>
     <LangVersion>latest</LangVersion>
-    <GameDir Condition="'$(GameDir)' == ''">F:\SteamLibrary\steamapps\common\Twin Shot Deluxe</GameDir>
+<!--    <GameDir Condition="'$(GameDir)' == ''">F:\SteamLibrary\steamapps\common\Twin Shot Deluxe</GameDir>-->
+    <GameDir Condition="'$(GameDir)' == ''">D:\Steam\steamapps\common\Twin Shot Deluxe</GameDir>
     <AssemblyName>TwinShotNet</AssemblyName>
   </PropertyGroup>
   <ItemGroup>

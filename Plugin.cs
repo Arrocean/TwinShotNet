@@ -30,12 +30,14 @@ public sealed class Plugin : BaseUnityPlugin
     private readonly Replica replica = new Replica();
     private Harmony harmony;
     private Harmony startupHarmony;
-    private bool host, started, visible = true, clientSceneReady;
+    private bool host, started, themePhase, visible = true, clientSceneReady;
     private bool oldBackground, backgroundOwned, quitting;
     internal bool PanelVisible => visible;
     private string address = "127.0.0.1", port = "27020", password = "", status = "Offline", fingerprint;
-    private int assigned, sequence, players = 2;
+    private int assigned, sequence, players = 2, hostLocalPlayers = 1;
     private float nextInput, nextSnapshot, lastFrame, connectedAt;
+    private int lastBroadcastCoins = -1;
+    private float nextLobbySync;
     private byte lastSent;
     private byte[] pendingFrame;
     private Rect window = new Rect(20, 40, 430, 360);
@@ -44,6 +46,7 @@ public sealed class Plugin : BaseUnityPlugin
     private readonly bool[] occupied = new bool[4];
     private readonly bool[] ready = new bool[4];
     internal bool InLobby => network != null && !started;
+    internal bool ThemePhase => themePhase;
 
     private void Awake()
     {
@@ -97,6 +100,7 @@ public sealed class Plugin : BaseUnityPlugin
         if (Game.instance != null) { status = "Return to the main menu before connecting"; return; }
         if (MenuScene.instance == null) { status = "Wait for the main menu"; return; }
         host = asHost;
+        hostLocalPlayers = asHost ? HostLocalPlayerCount() : 1;
         Array.Clear(ready, 0, 4); Array.Clear(occupied, 0, 4);
         occupied[0] = asHost;
         visible = true;
@@ -114,18 +118,18 @@ public sealed class Plugin : BaseUnityPlugin
         {
             if (host)
             {
-                int slot = Enumerable.Range(1, 3).FirstOrDefault(n => !peers.Values.Contains(n));
+                hostLocalPlayers = HostLocalPlayerCount();
+                int slot = Enumerable.Range(hostLocalPlayers, 4 - hostLocalPlayers).FirstOrDefault(n => !peers.Values.Contains(n));
                 if (slot == 0 || started) { peer.Disconnect(); return; }
                 peers.Add(peer, slot);
                 occupied[slot] = true;
-                Array.Clear(ready, 0, 4);
+                ready[slot] = false;
                 inputs[slot].Clear(); lastInput[slot] = Time.realtimeSinceStartup;
                 var writer = new NetDataWriter(); writer.Put((byte)1); writer.Put((byte)(slot + 1)); peer.Send(writer, DeliveryMethod.ReliableOrdered);
-                status = $"Hosting: {peers.Count + 1}/4 players";
+                status = $"Hosting: {hostLocalPlayers + peers.Count}/4 players";
                 BroadcastLobby();
-                ShowNativeCharacterSelect();
             }
-            else { server = peer; connectedAt = Time.realtimeSinceStartup; status = "Connected; waiting for host"; ShowNativeCharacterSelect(); }
+            else { server = peer; connectedAt = Time.realtimeSinceStartup; status = "Connected; waiting for host"; }
         };
         listener.PeerDisconnectedEvent += (peer, info) =>
         {
@@ -134,7 +138,7 @@ public sealed class Plugin : BaseUnityPlugin
                 if (peers.TryGetValue(peer, out int slot))
                 {
                     inputs[slot].Clear(); peers.Remove(peer); occupied[slot] = false;
-                    Array.Clear(ready, 0, 4);
+                    ready[slot] = false;
                     if (!started) BroadcastLobby();
                 }
                 status = "Player disconnected; slot input released";
@@ -204,21 +208,37 @@ public sealed class Plugin : BaseUnityPlugin
                 if (assigned < 2 || assigned > 4) throw new InvalidDataException("Invalid player slot");
                 status = $"Player {assigned}; waiting for host";
             }
-            else if (type == 3)
+            else if (type == 3) throw new InvalidDataException("Obsolete match packet");
+            else if (type == 8 && !started)
             {
-                int count = reader.GetByte();
-                if (count < 2 || count > 4 || started) return;
-                players = count; started = true;
-                assigned = reader.GetByte();
-                if (assigned < 2 || assigned > count) throw new InvalidDataException("Invalid match slot");
-                for (int i = 0; i < count; i++)
-                {
-                    skins[i] = reader.GetByte();
-                    if (skins[i] > 3) throw new InvalidDataException("Invalid match skin");
-                }
-                ConfigureGame(count);
-                SceneManager.LoadScene("Game");
-                lastFrame = Time.realtimeSinceStartup;
+                if (reader.AvailableBytes < 7) throw new InvalidDataException("Truncated match packet");
+                Theme theme = (Theme)reader.GetByte();
+                int level = reader.GetInt();
+                if (!Enum.IsDefined(typeof(Theme), theme)) throw new InvalidDataException("Invalid match theme");
+                if (level < 1 || level > 100) throw new InvalidDataException("Invalid match level");
+                var selectedLevel = new LevelId(theme, level);
+                if (!selectedLevel.DoesExist()) throw new InvalidDataException("Host selected an unavailable level");
+                players = reader.GetByte(); assigned = reader.GetByte();
+                if (players < 2 || players > 4 || assigned < 2 || assigned > players) throw new InvalidDataException("Invalid match players");
+                if (reader.AvailableBytes != players) throw new InvalidDataException("Invalid match packet size");
+                for (int i = 0; i < players; i++) skins[i] = reader.GetByte();
+                started = true; themePhase = false; ConfigureGame(players, theme, level); SceneManager.LoadScene("Game"); lastFrame = Time.realtimeSinceStartup;
+            }
+            else if (type == 9 && !started)
+            {
+                if (reader.AvailableBytes != 0) throw new InvalidDataException("Invalid theme phase packet");
+                themePhase = true;
+                lastSent = 0;
+                ShowNativeThemeSelect();
+                visible = true;
+                status = "Waiting for host to choose a theme and level";
+            }
+            else if (type == 10 && started)
+            {
+                if (reader.AvailableBytes != 4) throw new InvalidDataException("Invalid completion packet");
+                int coins = reader.GetInt();
+                if (coins < 0) throw new InvalidDataException("Invalid completion coins");
+                ApplyCompletionCoins(coins);
             }
             else if (type == 4 && started)
             {
@@ -235,35 +255,119 @@ public sealed class Plugin : BaseUnityPlugin
         }
     }
 
-    private void ConfigureGame(int count)
+    private void ConfigureGame(int count, Theme theme, int level)
     {
         Game.isUsingTouchControls = false;
         Game.playerSkins = skins.Take(count).Select(s => (Player.Skin)s).ToArray();
-        Game.themeChoice = Theme.Acropolis;
-        Game.levelId = new LevelId(Theme.Acropolis, 1);
+        Game.themeChoice = theme;
+        Game.levelId = new LevelId(theme, level);
     }
 
     private void StartMatch()
     {
+        SyncHostLocalState();
         if (peers.Count == 0) { status = "At least one friend must connect first"; return; }
         if (Enumerable.Range(0, 4).Any(i => occupied[i] && !ready[i])) { status = "Waiting for everyone to ready"; return; }
-        // Compact disconnected lobby gaps before spawning the game's contiguous player array.
-        var oldSkins = (int[])skins.Clone();
-        var ordered = peers.OrderBy(p => p.Value).ToArray();
-        players = ordered.Length + 1;
-        for (int i = 0; i < ordered.Length; i++) { skins[i + 1] = oldSkins[ordered[i].Value]; peers[ordered[i].Key] = i + 1; }
+        int localPlayers = hostLocalPlayers;
+        players = localPlayers + peers.Count;
+        if (players > 4) { status = "Maximum of four total players reached"; return; }
+        foreach (var input in inputs) input.Clear();
+        ShowNativeThemeSelect();
+        themePhase = true;
+        foreach (var peer in peers.Keys) { var writer = new NetDataWriter(); writer.Put((byte)9); peer.Send(writer, DeliveryMethod.ReliableOrdered); }
+        status = "Choose a theme and level";
+    }
+
+    private void SyncHostLocalState()
+    {
+        if (!host) return;
+        try
+        {
+            var scene = MenuScene.instance;
+            var menu = scene?.GetType().GetField("characterSelectMenu", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)?.GetValue(scene);
+            var boxes = menu?.GetType().GetField("boxes", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)?.GetValue(menu) as Array;
+            if (boxes != null)
+                foreach (var box in boxes)
+                {
+                    var type = box.GetType();
+                    int number = (int)type.GetField("number", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic).GetValue(box);
+                    if (number < 1 || number > hostLocalPlayers) continue;
+                    int slot = number - 1;
+                    var state = type.GetField("state", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic).GetValue(box);
+                    var skin = type.GetField("selectedSkin", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic).GetValue(box);
+                    occupied[slot] = Convert.ToInt32(state) != 0;
+                    skins[slot] = Convert.ToInt32(skin);
+                    ready[slot] = Convert.ToInt32(state) == 2;
+                }
+        }
+        catch (Exception ex) { Logger.LogDebug("Native host lobby state unavailable: " + ex.Message); }
+        for (int i = 0; i < 4; i++) if (!peers.Values.Contains(i)) { if (!occupied[i]) ready[i] = false; }
+        BroadcastLobby();
+    }
+
+    internal void StartSelectedMatch(Theme theme, LevelId level)
+    {
         started = true;
+        themePhase = false;
         foreach (var input in inputs) input.Clear();
         foreach (var entry in peers)
         {
-            var writer = new NetDataWriter(); writer.Put((byte)3); writer.Put((byte)players); writer.Put((byte)(entry.Value + 1));
+            var writer = new NetDataWriter(); writer.Put((byte)8); writer.Put((byte)theme); writer.Put(level.LevelNumberWithinTheme); writer.Put((byte)players); writer.Put((byte)(entry.Value + 1));
             for (int i = 0; i < players; i++) writer.Put((byte)skins[i]);
             entry.Key.Send(writer, DeliveryMethod.ReliableOrdered);
         }
-        ConfigureGame(players);
+        ConfigureGame(players, theme, level.LevelNumberWithinTheme);
         SceneManager.LoadScene("Game");
         visible = false;
         status = "Host / P1";
+    }
+
+    private void ApplyCompletionCoins(int coins)
+    {
+        try
+        {
+            var panel = Game.instance?.ui?.levelCompletePanel;
+            var type = panel?.GetType();
+            type?.GetField("lifetimeCoins", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)?.SetValue(panel, coins);
+            var text = type?.GetField("textLifetimeCoins", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)?.GetValue(panel);
+            text?.GetType().GetProperty("text")?.SetValue(text, coins.ToString());
+        }
+        catch (Exception ex) { Logger.LogWarning("Completion coin UI update unavailable: " + ex.Message); }
+    }
+
+    internal void BroadcastCompletionCoins(int coins)
+    {
+        if (!Hosting || coins < 0) return;
+        if (coins == lastBroadcastCoins) return;
+        lastBroadcastCoins = coins;
+        var writer = new NetDataWriter(); writer.Put((byte)10); writer.Put(coins);
+        foreach (var peer in peers.Keys) peer.Send(writer, DeliveryMethod.ReliableOrdered);
+    }
+
+    private int HostLocalPlayerCount()
+    {
+        try
+        {
+            var scene = MenuScene.instance;
+            var menu = scene?.GetType().GetField("characterSelectMenu", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)?.GetValue(scene);
+            var boxes = menu?.GetType().GetField("boxes", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)?.GetValue(menu) as Array;
+            if (boxes == null) return 1;
+            int count = 0;
+            foreach (var box in boxes)
+            {
+                var state = box?.GetType().GetField("state", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)?.GetValue(box);
+                if (state != null && Convert.ToInt32(state) != 0) count++;
+            }
+            return Mathf.Clamp(count, 1, 4);
+        }
+        catch { return 1; }
+    }
+
+    private void ShowNativeThemeSelect()
+    {
+        var menuScene = MenuScene.instance;
+        var menu = menuScene?.GetType().GetField("themeSelectMenu", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)?.GetValue(menuScene);
+        menu?.GetType().GetMethod("Show", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)?.Invoke(menu, null);
     }
 
     private static byte ReadKeys()
@@ -282,14 +386,8 @@ public sealed class Plugin : BaseUnityPlugin
     private void Update()
     {
         if (Input.GetKeyDown(KeyCode.F8)) visible = !visible;
-        if (!started && Input.GetKeyDown(KeyCode.Escape)) { if (Client) ChangeLobby(skins[Mathf.Max(0, assigned - 1)], false); else Close(true); }
-        if (Client && !started && Input.GetKeyDown(KeyCode.Space)) ChangeLobby(skins[Mathf.Max(0, assigned - 1)], !ready[Mathf.Max(0, assigned - 1)]);
-        if (Client && !started && assigned > 0)
-        {
-            int slot = assigned - 1;
-            if (Input.GetKeyDown(KeyCode.LeftArrow) || Input.GetKeyDown(KeyCode.A)) ChangeLobby(Mathf.Max(0, skins[slot] - 1), false);
-            if (Input.GetKeyDown(KeyCode.RightArrow) || Input.GetKeyDown(KeyCode.D)) ChangeLobby(Mathf.Min(3, skins[slot] + 1), false);
-        }
+        if (Client && !started && !themePhase && assigned > 0 && Input.GetKeyDown(KeyCode.Space))
+            InvokeClientJoin();
         network?.PollEvents();
         if (network == null) return;
         float now = Time.realtimeSinceStartup;
@@ -306,6 +404,7 @@ public sealed class Plugin : BaseUnityPlugin
         }
         if (host)
         {
+            if (!started && now >= nextLobbySync) { nextLobbySync = now + 0.2f; SyncHostLocalState(); }
             for (int i = 1; i < 4; i++) if (now - lastInput[i] > 0.5f) inputs[i].Clear();
         }
         else if (server != null && assigned != 0)
@@ -320,6 +419,21 @@ public sealed class Plugin : BaseUnityPlugin
             }
             if (started && now - lastFrame > 5) status = "No complete snapshot for 5 seconds";
         }
+    }
+
+    private void InvokeClientJoin()
+    {
+        try
+        {
+            var scene = MenuScene.instance;
+            var menu = scene?.GetType().GetField("characterSelectMenu", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)?.GetValue(scene);
+            var boxes = menu?.GetType().GetField("boxes", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)?.GetValue(menu) as Array;
+            if (boxes == null || assigned > boxes.Length) return;
+            var box = boxes.GetValue(assigned - 1);
+            var join = box?.GetType().GetMethod("Join", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            if (join != null) join.Invoke(box, new[] { Activator.CreateInstance(join.GetParameters()[0].ParameterType) });
+        }
+        catch (Exception ex) { Logger.LogDebug("Client native join unavailable: " + ex.Message); }
     }
 
     private void LateUpdate()
@@ -341,15 +455,22 @@ public sealed class Plugin : BaseUnityPlugin
                     writer.Put(bytes, i * Wire.ChunkSize, Math.Min(Wire.ChunkSize, bytes.Length - i * Wire.ChunkSize));
                     foreach (var peer in peers.Keys) peer.Send(writer, DeliveryMethod.Unreliable);
                 }
-                status = $"Host / P1 | {peers.Count + 1}/4 | {bytes.Length * snapshotHz / 1024:0} KiB/s per peer";
+                status = $"Host / P1 | {players}/4 | {bytes.Length * snapshotHz / 1024:0} KiB/s per peer";
             }
             else
             {
+                Game.instance.ui?.Advance();
                 if (!clientSceneReady)
                 {
                     replica.InitializeClient(); clientSceneReady = true; visible = false;
                 }
-                if (pendingFrame != null) { replica.Apply(pendingFrame); pendingFrame = null; }
+                if (pendingFrame != null)
+                {
+                    byte[] frame = pendingFrame; pendingFrame = null;
+                    try { replica.Apply(frame); }
+                    catch (InvalidDataException ex) { Logger.LogWarning("Dropped invalid snapshot: " + ex.Message); }
+                    catch (Exception ex) { Logger.LogWarning("Dropped snapshot: " + ex.Message); }
+                }
                 replica.Render();
                 if (server != null && Time.realtimeSinceStartup - lastFrame < 5)
                 status = $"P{assigned} | Ping {server.Ping} ms | missing sprites {replica.MissingSprites}";
@@ -381,7 +502,6 @@ public sealed class Plugin : BaseUnityPlugin
     {
         if (Client && clientSceneReady) GUI.Label(new Rect(12, Screen.height - 55, Screen.width - 24, 50), replica.Hud);
         GUI.Label(new Rect(12, 8, Screen.width - 24, 25), "TwinShotNet EXPERIMENTAL | F8 | " + status);
-        if (Client && !started) return;
         if (!visible) return;
         Cursor.visible = true;
         window.width = Mathf.Min(430, Screen.width - 20);
@@ -405,7 +525,6 @@ public sealed class Plugin : BaseUnityPlugin
         {
             if (!started)
             {
-                GUILayout.Label("Character select is shown in the game UI.");
                 GUILayout.Label("Use the original character screen to join, change skin and ready.");
                 GUILayout.Label(status);
             }
@@ -421,13 +540,14 @@ public sealed class Plugin : BaseUnityPlugin
     {
         bool wasStarted = started;
         network?.Stop(); network = null; server = null; peers.Clear();
-        started = false; host = false; assigned = 0; clientSceneReady = false; pendingFrame = null;
+        started = false; themePhase = false; host = false; assigned = 0; clientSceneReady = false; pendingFrame = null;
         assembler = new FrameAssembler(); frameCache = new FrameCache(); sequence = 0;
         nextInput = nextSnapshot = lastFrame = connectedAt = 0; lastSent = 0;
         foreach (var input in inputs) input.Clear();
         Array.Clear(applied, 0, applied.Length);
         replica.Clear();
         if (backgroundOwned) { Application.runInBackground = oldBackground; backgroundOwned = false; }
+        lastBroadcastCoins = -1;
         status = "Offline"; visible = true;
         if (wasStarted && returnToMenu) SceneManager.LoadScene("Menus");
     }
@@ -445,7 +565,7 @@ public sealed class Plugin : BaseUnityPlugin
         var writer = new NetDataWriter(); writer.Put((byte)6);
         for (int i = 0; i < 4; i++) { writer.Put(occupied[i]); writer.Put((byte)skins[i]); writer.Put(ready[i]); }
         foreach (var peer in peers.Keys) peer.Send(writer, DeliveryMethod.ReliableOrdered);
-        SyncNativeLobby();
+        if (!host) SyncNativeLobby();
     }
 
     private void SyncNativeLobby()
@@ -453,7 +573,8 @@ public sealed class Plugin : BaseUnityPlugin
         try
         {
             var flags = BindingFlags.Static | BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
-            object menu = typeof(MenuScene).GetField("characterSelectMenu", flags)?.GetValue(null);
+            object menuScene = typeof(MenuScene).GetField("instance", flags)?.GetValue(null);
+            object menu = menuScene?.GetType().GetField("characterSelectMenu", flags)?.GetValue(menuScene);
             if (menu == null) return;
             var boxes = menu.GetType().GetField("boxes", flags)?.GetValue(menu) as Array;
             if (boxes == null) return;
@@ -493,6 +614,7 @@ public sealed class Plugin : BaseUnityPlugin
     internal bool AllowNativeContinue()
     {
         if (!Hosting || started) return true;
+        if (themePhase) return false;
         if (peers.Count == 0 || Enumerable.Range(0, 4).Any(i => occupied[i] && !ready[i]))
         {
             status = "Waiting for every player to be ready";
@@ -504,8 +626,11 @@ public sealed class Plugin : BaseUnityPlugin
 
     internal bool HandleNativeJoin(object box, bool back, int direction)
     {
-        if (!Client || started || box == null || assigned <= 0) return true;
+        if (started || box == null) return true;
+        // The host uses the game's native join-box flow; only clients need remote input forwarding.
+        if (host) return true;
         int number = (int)box.GetType().GetField("number", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic).GetValue(box);
+        if (!Client || assigned <= 0) return true;
         if (number != assigned) return false;
         int slot = assigned - 1;
         if (back) ChangeLobby(skins[slot], false);
@@ -515,18 +640,12 @@ public sealed class Plugin : BaseUnityPlugin
     }
 }
 
-[HarmonyPatch(typeof(MenuScene), "FixedUpdate")]
-internal static class LobbyMenuPatch
-{
-    private static bool Prefix() => Plugin.Instance == null || !Plugin.Instance.isActiveAndEnabled || !Plugin.Instance.InLobby;
-}
-
 [HarmonyPatch(typeof(GameInput), "AdvancePlayer")]
 internal static class InputPatch
 {
     private static bool Prefix(int number)
     {
-        if (Plugin.Instance == null || !Plugin.Instance.isActiveAndEnabled || !Plugin.Instance.Hosting || Game.instance == null) return true;
+        if (Plugin.Instance == null || !Plugin.Instance.isActiveAndEnabled || !Plugin.Instance.Hosting || Plugin.Instance.InLobby || Game.instance == null) return true;
         if (number == 1 && !Plugin.Instance.PanelVisible && Application.isFocused) return true;
         Plugin.Instance.ApplyInput(number);
         return false;
@@ -539,14 +658,85 @@ internal static class ClientGamePatch
     private static bool Prefix() => Plugin.Instance == null || !Plugin.Instance.isActiveAndEnabled || !Plugin.Instance.Client;
 }
 
+[HarmonyPatch(typeof(LevelCompletePanel), "Advance")]
+internal static class CompletionCoinsPatch
+{
+    private static void Postfix(LevelCompletePanel __instance)
+    {
+        var plugin = Plugin.Instance;
+        if (plugin == null || !plugin.isActiveAndEnabled || !plugin.Hosting) return;
+        var field = __instance.GetType().GetField("lifetimeCoins", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+        if (field?.GetValue(__instance) is int coins) plugin.BroadcastCompletionCoins(coins);
+    }
+}
+
 [HarmonyPatch(typeof(CharacterSelectMenu), "ContinueToNextScreen")]
 internal static class CharacterSelectContinuePatch
 {
-    private static bool Prefix()
+    private static bool Prefix(CharacterSelectMenu __instance)
     {
         Plugin plugin = Plugin.Instance;
-        return plugin == null || !plugin.isActiveAndEnabled || plugin.AllowNativeContinue();
+        if (plugin == null || !plugin.isActiveAndEnabled || !plugin.InLobby) return true;
+        if (plugin.Client) return false;
+        if (!plugin.Hosting) return true;
+        var method = __instance.GetType().GetMethod("IsReadyToContinue", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+        if (method != null && !(bool)method.Invoke(__instance, null)) return true;
+        return plugin.AllowNativeContinue();
     }
+}
+
+[HarmonyPatch(typeof(CharacterSelectMenu), "GoBackToPreviousMenu")]
+internal static class ClientCharacterSelectBackPatch
+{
+    private static bool Prefix() => Plugin.Instance == null || !Plugin.Instance.isActiveAndEnabled || !Plugin.Instance.Client;
+}
+
+[HarmonyPatch(typeof(ThemeSelectMenu), "StartGame")]
+internal static class ThemeSelectStartPatch
+{
+    private static bool Prefix(Theme themeChoice, LevelId levelToStartOn)
+    {
+        var plugin = Plugin.Instance;
+        if (plugin == null || !plugin.isActiveAndEnabled || !plugin.Hosting) return true;
+        plugin.StartSelectedMatch(themeChoice, levelToStartOn);
+        return false;
+    }
+}
+
+[HarmonyPatch(typeof(ThemeSelectMenu), "OnPressContinue")]
+internal static class ClientThemeContinuePatch
+{
+    private static bool Prefix() => Plugin.Instance == null || !Plugin.Instance.Client || !Plugin.Instance.ThemePhase;
+}
+
+[HarmonyPatch(typeof(ThemeSelectMenu), "OnPressLevelSelect")]
+internal static class ClientThemeLevelSelectPatch
+{
+    private static bool Prefix() => Plugin.Instance == null || !Plugin.Instance.Client || !Plugin.Instance.ThemePhase;
+}
+
+[HarmonyPatch(typeof(ThemeSelectMenu), "OnPressThemeLeft")]
+internal static class ClientThemeLeftPatch
+{
+    private static bool Prefix() => Plugin.Instance == null || !Plugin.Instance.Client || !Plugin.Instance.ThemePhase;
+}
+
+[HarmonyPatch(typeof(ThemeSelectMenu), "OnPressThemeRight")]
+internal static class ClientThemeRightPatch
+{
+    private static bool Prefix() => Plugin.Instance == null || !Plugin.Instance.Client || !Plugin.Instance.ThemePhase;
+}
+
+[HarmonyPatch(typeof(ThemeSelectMenu), "OnPressLevelButton")]
+internal static class ClientThemeLevelButtonPatch
+{
+    private static bool Prefix() => Plugin.Instance == null || !Plugin.Instance.Client || !Plugin.Instance.ThemePhase;
+}
+
+[HarmonyPatch(typeof(ThemeSelectMenu), "OnPressBack")]
+internal static class ClientThemeBackPatch
+{
+    private static bool Prefix() => Plugin.Instance == null || !Plugin.Instance.Client || !Plugin.Instance.ThemePhase;
 }
 
 [HarmonyPatch(typeof(PlayerJoinBox), "OnPressLeft")]

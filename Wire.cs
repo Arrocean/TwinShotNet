@@ -8,7 +8,7 @@ namespace TwinShotNet;
 
 public static class Wire
 {
-    public const string Version = "TwinShotNet-0.3.0";
+    public const string Version = "TwinShotNet-0.4.0";
     public const int ChunkSize = 900;
     public const int MaxPacked = 512 * 1024;
     public const int MaxRaw = 2 * 1024 * 1024;

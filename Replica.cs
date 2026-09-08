@@ -53,9 +53,11 @@ public sealed class Replica
 
         SpriteRenderer[] found = UnityEngine.Object.FindObjectsByType<SpriteRenderer>(FindObjectsSortMode.None);
         var renderers = new List<SpriteRenderer>(found.Length);
+        var visualIds = new HashSet<int>();
         foreach (SpriteRenderer renderer in found)
         {
-            if (renderer == null || !renderer.enabled || !renderer.gameObject.activeInHierarchy || renderer.sprite == null) continue;
+            if (renderer == null || !renderer.enabled || !renderer.gameObject.activeInHierarchy || renderer.gameObject.isStatic || IsLocalMapTile(renderer) || renderer.gameObject.layer == LayerMask.NameToLayer("UI") || renderer.sprite == null || !ValidVector(renderer.transform.position) || !ValidVector(renderer.transform.lossyScale) || !ValidFloat(renderer.transform.eulerAngles.z)) continue;
+            if (!visualIds.Add(StableVisualId(renderer))) continue;
             if (renderer.gameObject.name.StartsWith("TwinShotNet Replica ", StringComparison.Ordinal)) continue;
             renderers.Add(renderer);
             if (renderers.Count >= SnapshotCodec.MaxVisuals) break;
@@ -64,12 +66,14 @@ public sealed class Replica
         foreach (SpriteRenderer renderer in renderers)
         {
             Transform transform = renderer.transform;
+            Vector3 position = transform.position;
+            Vector3 scale = transform.lossyScale;
+            Vector3 rotation = transform.eulerAngles;
             writer.Write(StableVisualId(renderer));
             writer.Write(spriteIds.TryGetValue(renderer.sprite, out string key) ? key : "missing");
-            writer.Write(transform.position.x); writer.Write(transform.position.y); writer.Write(transform.position.z);
-            Vector3 scale = transform.lossyScale;
+            writer.Write(position.x); writer.Write(position.y); writer.Write(position.z);
             writer.Write(scale.x); writer.Write(scale.y); writer.Write(scale.z);
-            writer.Write(transform.eulerAngles.z);
+            writer.Write(rotation.z);
             Color32 color = renderer.color;
             writer.Write(color.r); writer.Write(color.g); writer.Write(color.b); writer.Write(color.a);
             writer.Write(renderer.sortingLayerName ?? "Default"); writer.Write(renderer.sortingOrder);
@@ -99,6 +103,7 @@ public sealed class Replica
             currentLevel = level;
             BuildSpriteIndex();
             HideLocalDynamicRenderers();
+            return;
         }
         Camera camera = Camera.main;
         if (camera != null)
@@ -117,9 +122,16 @@ public sealed class Replica
             Player local = Game.instance.level.players.FirstOrDefault(p => p.number == number);
             if (local != null)
             {
+                int previousScore = local.score;
                 local.hits = hits; local.score = score; local.alive = alive;
                 local.powerup = (Player.PowerupType)powerup;
-                UpdateScoreUi(number, local.score, score);
+                UpdateScoreUi(number, score, previousScore);
+                try
+                {
+                    object ui = Game.instance.ui.Player(local);
+                    ui?.GetType().GetMethod("Advance", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)?.Invoke(ui, null);
+                }
+                catch (Exception ex) { Debug.LogWarning("[TwinShotNet] Player HUD update unavailable: " + ex.Message); }
             }
             hud.Add($"P{number} {(alive ? hits + " HP" : "OUT")} {score} pts" + (powerup == 0 ? "" : $" power {powerup}"));
         }
@@ -209,16 +221,14 @@ public sealed class Replica
 
     private static int StableVisualId(SpriteRenderer renderer)
     {
-        string path = renderer.transform.name;
-        Transform parent = renderer.transform.parent;
-        while (parent != null) { path = parent.name + "/" + path; parent = parent.parent; }
-        unchecked
-        {
-            int hash = 17;
-            foreach (char c in path) hash = hash * 31 + c;
-            return hash == 0 ? 1 : hash;
-        }
+        // Unity instance IDs are unique for live objects and avoid path-hash collisions
+        // when generated enemies contain identical transform hierarchies.
+        int id = renderer.GetInstanceID();
+        return id == 0 ? 1 : id;
     }
+
+    private static bool ValidFloat(float value) => !float.IsNaN(value) && !float.IsInfinity(value) && Mathf.Abs(value) < SnapshotCodec.CoordinateLimit;
+    private static bool ValidVector(Vector3 value) => ValidFloat(value.x) && ValidFloat(value.y) && ValidFloat(value.z);
 
     private void RestoreLocalRenderers()
     {
@@ -293,11 +303,19 @@ public sealed class Replica
         foreach (SpriteRenderer destroyed in hiddenRenderers.Keys.Where(renderer => renderer == null).ToArray())
             hiddenRenderers.Remove(destroyed);
         foreach (SpriteRenderer renderer in UnityEngine.Object.FindObjectsByType<SpriteRenderer>(FindObjectsSortMode.None))
-            if (renderer != null && !renderer.gameObject.name.StartsWith("TwinShotNet Replica ", StringComparison.Ordinal))
-            {
+            if (renderer != null && !renderer.gameObject.isStatic && !IsLocalMapTile(renderer) && renderer.gameObject.layer != LayerMask.NameToLayer("UI") && !renderer.gameObject.name.StartsWith("TwinShotNet Replica ", StringComparison.Ordinal))
+                {
                 // Preserve the first observed state even if animation re-enables it later.
                 if (!hiddenRenderers.ContainsKey(renderer)) hiddenRenderers.Add(renderer, renderer.enabled);
                 renderer.enabled = false;
             }
+    }
+
+    private static bool IsLocalMapTile(SpriteRenderer renderer)
+    {
+        if (renderer.GetComponent("Tile") != null) return true;
+        for (Transform parent = renderer.transform.parent; parent != null; parent = parent.parent)
+            if (parent.name.IndexOf("tile", StringComparison.OrdinalIgnoreCase) >= 0) return true;
+        return false;
     }
 }

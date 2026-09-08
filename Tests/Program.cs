@@ -35,7 +35,7 @@ static class Program
 
     static void TransportTests()
     {
-        Check(Wire.Version == "TwinShotNet-0.3.0", "Protocol version");
+        Check(Wire.Version == "TwinShotNet-0.4.0", "Protocol version");
         var raw = new byte[12000];
         new Random(7).NextBytes(raw);
         var packed = Wire.Pack(raw);
