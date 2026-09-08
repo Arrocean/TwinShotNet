@@ -1,64 +1,90 @@
-# TwinShotNet (experimental)
+# TwinShotNet
 
-## 0.2.0 update
+Experimental BepInEx 5 plugin that adds host-authoritative UDP multiplayer to Twin Shot Deluxe. The current plugin version is **0.4.0**. All players must use the same plugin and game build; mismatched builds are rejected during connection.
 
-All peers must update; protocol 0.1.0 is rejected. Hosting now opens a four-slot plugin lobby. Each player selects Pink/Orange/Purple/Blue and marks Ready; the host can start only after everyone is ready. Joining or leaving clears readiness. Empty slots are compacted at start. This is a plugin lobby, not the original character-selection UI; unlockable skins are not offered yet.
+## Features
 
-Sprite identifiers now derive from serialized asset-reference paths rather than potentially duplicated texture/sprite names. Ambiguous fallback names are omitted instead of displaying another asset. Missing sprites are counted in the status bar. Original local renderers are hidden every frame to prevent animation scripts making duplicate local art reappear. Received score/hit/alive/powerup values update client player display data, and the original score widget is refreshed.
+- Host runs the original game simulation at its native 60 Hz.
+- Up to four players, with one isolated network input slot per player.
+- Host and peers use the game's native character-selection/ready UI after the room is opened.
+- Players can occupy slots, choose Pink, Orange, Purple, or Blue, and ready up before the host starts.
+- Joining or leaving before the match clears readiness; the host cannot start until every occupied slot is ready.
+- Host P1 keeps the original Rewired keyboard/controller bindings. Clients use arrows or WASD, Space/Z to jump, and X/J to shoot.
+- Host state is sent as compressed visual snapshots. Clients do not independently simulate combat, collision, enemy AI, or random events.
+- Snapshot packets are chunked over UDP. Clients request missing chunks with bounded NACK repair; the host keeps a short, aggregate repair cache.
+- Host score, hit points, alive state, and powerup state are sent to clients and applied to the in-game player HUD.
+- Room authentication uses a shared room key and an `Assembly-CSharp.dll` fingerprint.
+- The plugin can optionally suppress the game's managed Steam restart/initialization calls for standalone startup testing.
 
-These changes require two-machine regression testing, especially animated enemies, pickups, score, reconnect-before-start and scene transitions. Do not treat a successful build as validation of the reported visual fix.
+## Important limitations
 
-Startup fix revision 2: both `LoadingScreen.Start` and `SteamManager.Awake` are patched. Initialization-disabled mode also suppresses the loading coroutine's Steam Deck query. Earlier startup test packages only patched SteamManager and missed the actual loading-screen startup calls. The execution marker is now `Startup reached; Steam initialization intentionally disabled.`
+This remains an experimental prototype, not a finished release. The client renders the host's visual state instead of running a local copy of the game. There is no client-side prediction or rollback, so remote input necessarily includes network delay and interpolation delay.
 
-An experimental BepInEx 5 plugin for host-authoritative online play in Twin Shot Deluxe.
+The snapshot currently includes active `SpriteRenderer` objects and player HUD state. Mesh water, special materials, particle effects, sound timing, some UI, sorting groups, final-level transitions, reconnect-after-start, and every scene lifecycle have not been fully regression-tested. Ambiguous sprite fallback matches are deliberately omitted rather than replaced with a potentially incorrect asset; the client status line reports missing sprites.
 
-## Current model
+The host currently starts Acropolis level 1 through the network lobby. Skin selection currently exposes four base colors, not unlockable skins. Public UDP traffic is not encrypted, so use a unique room key and do not reuse an account password.
 
-- The host runs the original 60 Hz game simulation.
-- Each peer owns exactly one player slot and sends only that slot's input.
-- The client does not simulate combat. It displays compressed visual snapshots from the host.
-- The room rejects mismatched game assemblies and sessions use a room key.
+## Installation
 
-This is an early technical prototype. It does not yet reproduce every particle, mesh effect, sound, menu, or controller binding. Public UDP traffic is not encrypted. Do not reuse a password from another service.
+Install BepInEx 5.4.23.5 Windows x64 separately. Then copy this folder to every player's game directory:
+
+```text
+Twin Shot Deluxe/
+└─ BepInEx/
+   └─ plugins/
+      └─ TwinShotNet/
+         ├─ TwinShotNet.dll
+         └─ LiteNetLib.dll
+```
+
+Do not copy `Assembly-CSharp.dll`, Unity DLLs, project files, PDB files, or the BepInEx distribution as part of the plugin package. All participants need the same two plugin DLLs.
 
 ## Build and deploy
 
+From `D:\RiderProject\TwinShotNet`:
+
 ```powershell
 dotnet build -c Release -p:Deploy=true
+dotnet run --project Tests/Tests.csproj -c Release
 ```
 
-Copy the resulting `TwinShotNet.dll` and `LiteNetLib.dll` to every player's `BepInEx/plugins/TwinShotNet` directory. The deploy command does this for the local default game installation.
+The deploy target copies the plugin DLL and `LiteNetLib.dll` to the default local game installation. The automated protocol/input suite currently contains 11 checks.
 
-## Play
+## Start a session
 
-1. All players start the game and remain at the main menu.
-2. Press `F8`.
-3. The host sets UDP port `27020`, enters a unique room key of at least 12 characters, and selects **Host**.
-4. The router maps the same public UDP port to the host PC's LAN address and UDP port.
-5. Friends enter the public IP/DNS, port, and identical room key, then select **Join**.
-6. The host selects **Start** after all players connect.
+1. Start the game and remain at the main menu on every machine.
+2. Press `F8` to open the TwinShotNet panel.
+3. The host enters a UDP port, a unique room key of 12-128 characters, and clicks **Host**.
+4. The host forwards that port as **UDP**, not HTTP, HTTPS, or TCP. Windows Firewall must allow the game executable to receive UDP.
+5. Each friend enters the host's public IP or DNS name without `https://`, enters the public UDP port and identical room key, and clicks **Join**.
+6. The native character-selection screen opens. Each player joins their slot, selects a base color, and marks **Ready**.
+7. The host starts only after all occupied slots show ready. The host's local P1 is controlled with the original Rewired bindings.
 
-The host uses the original game's P1 controls (Rewired keyboard/controller bindings). Clients currently use arrows or WASD, Space/Z to jump, X/J to shoot. `F8` releases gameplay input and opens the panel. Client controller support is not implemented.
+For an HTTPS-looking endpoint such as `https://example.invalid:13478`, the client fields must be `example.invalid` and `13478`, and the provider must explicitly offer UDP forwarding. An HTTPS tunnel cannot carry this protocol. CGNAT cannot be bypassed by ordinary router forwarding; use a UDP-capable relay or a VPN overlay.
 
-## Verification and limits
+## Steam startup options
 
-### Optional Steam restart suppression
-
-After running the updated plugin once, edit `BepInEx/config/local.twinshot.net.cfg`:
+The plugin creates `BepInEx/config/local.twinshot.net.cfg` on first launch. These options are disabled by default and require a restart:
 
 ```ini
 [Startup]
-SkipSteamRestart = true
+SkipSteamRestart = false
+DisableSteamInitialization = false
 ```
 
-Default is `false`. Restart the game after changing it. This only suppresses the `SteamAPI.RestartAppIfNecessary` call inside `SteamManager.Awake`; Steam initialization remains intact. It does not guarantee operation without Steam or change other launch/ownership checks. Set it back to `false` to restore normal behavior. No original game DLL is modified. This optional path has not been validated with Steam fully stopped.
+`SkipSteamRestart` suppresses the game's managed `SteamAPI.RestartAppIfNecessary` calls but leaves Steam initialization enabled. `DisableSteamInitialization` additionally replaces the managed Steam initialization path with a deliberately false result and takes precedence over the first option. Steam-dependent features are unavailable in that mode.
 
-For a separate diagnostic that also suppresses the managed `SteamAPI.Init()` call, set `DisableSteamInitialization = true` under `[Startup]`. Default is false; it takes precedence over `SkipSteamRestart`. Initialization stays false and Steam-dependent features are unavailable. The game's `SteamAPI_Init() failed` message is expected in this mode. The log marker `SteamManager reached; Steam initialization intentionally disabled` confirms the patched method actually executed. This does not affect native launch checks before plugin loading and is not verified to provide standalone gameplay. To restore all original startup behavior, set both options to false.
+This only patches managed startup code after BepInEx loads. It does not bypass native launcher checks, ownership checks, or licensing. If standalone testing is enabled, the log should contain `DisableSteamInitialization enabled` and `Startup reached; Steam initialization intentionally disabled.` Restore both values to `false` for normal Steam behavior.
 
-Build and 11 automated input/protocol checks pass (`dotnet run --project Tests/Tests.csproj -c Release`). This does not establish successful two-instance gameplay.
+## Troubleshooting
 
-All SpriteRenderer objects, including terrain, are sent as full snapshots. This avoids unsynchronized destructible terrain but uses more bandwidth than entity deltas. Missing sprites, sorting groups, special materials, mesh water, sound, local HUD hiding, scene lifecycle and final-level transitions need gameplay validation. There is no prediction or rollback: remote response includes network round-trip time and interpolation delay, and cannot currently match local latency.
+- Check `BepInEx/LogOutput.log` for `TwinShotNet 0.4.0 loaded`.
+- `Unknown Host` usually means the address contains `https://` or the endpoint is not a DNS hostname. Use hostname and port in separate fields.
+- A timeout usually means the endpoint is not UDP, the port mapping is wrong, Windows Firewall is blocking the game, or the host is behind CGNAT.
+- All participants must update together when the protocol version changes.
+- `missing sprites` in the client status line indicates assets that were not safely matched, not a gameplay simulation failure.
+- Stop the session from the panel before changing rooms. Joining after the match has started is not supported.
 
-Only pre-game joining is supported. Start uses Acropolis 1 and fixed player colors. Disconnected slots remain inactive until a new session. Host progress uses the original save behavior; back up your saves before testing.
+## Project status
 
-Windows Firewall must permit `Twin Shot Deluxe.exe` on the selected UDP port. CGNAT connections require a VPN overlay or a UDP-capable relay/VPS; ordinary router forwarding cannot bypass CGNAT.
+The repository contains the plugin source, protocol implementation, asset snapshot renderer, automated protocol/input tests, and experimental startup patch. Successful compilation and unit tests do not establish complete two-machine gameplay. Regression testing should cover movement, arrows, enemies, pickups and score, player death, level completion, disconnects, and public-network latency.
