@@ -21,21 +21,8 @@ public sealed class Replica
         public int Seen;
     }
 
-    private struct State
-    {
-        public int Id;
-        public string Sprite;
-        public Vector3 Position;
-        public Vector3 Scale;
-        public float Rotation;
-        public Color32 Color;
-        public string Layer;
-        public int Order;
-        public bool FlipX;
-        public bool FlipY;
-    }
-
     private readonly Dictionary<int, Visual> visuals = new Dictionary<int, Visual>();
+    private readonly Dictionary<SpriteRenderer, bool> hiddenRenderers = new Dictionary<SpriteRenderer, bool>();
     private Dictionary<string, Sprite> sprites;
     private readonly Dictionary<Sprite, string> spriteIds = new Dictionary<Sprite, string>();
     private Assets indexedAssets;
@@ -70,7 +57,7 @@ public sealed class Replica
             if (renderer == null || !renderer.enabled || !renderer.gameObject.activeInHierarchy || renderer.sprite == null) continue;
             if (renderer.gameObject.name.StartsWith("TwinShotNet Replica ", StringComparison.Ordinal)) continue;
             renderers.Add(renderer);
-            if (renderers.Count >= 10000) break;
+            if (renderers.Count >= SnapshotCodec.MaxVisuals) break;
         }
         writer.Write(renderers.Count);
         foreach (SpriteRenderer renderer in renderers)
@@ -99,16 +86,14 @@ public sealed class Replica
 
     public void Apply(byte[] raw)
     {
-        using var stream = new MemoryStream(raw, false);
-        using var reader = new BinaryReader(stream);
-        int level = reader.ReadInt32();
-        float cameraX = reader.ReadSingle();
-        float cameraY = reader.ReadSingle();
-        float cameraSize = reader.ReadSingle();
+        Snapshot snapshot = SnapshotCodec.Decode(raw);
+        int level = snapshot.Level;
         if (level != currentLevel)
         {
             LevelId id = LevelId.ByUniqueNumber(level);
             if (!id.DoesExist()) throw new InvalidDataException("Host selected an unavailable level");
+            ClearVisuals();
+            RestoreLocalRenderers();
             Game.instance.LoadAndStartLevel(id, null, false);
             currentLevel = level;
             BuildSpriteIndex();
@@ -118,18 +103,16 @@ public sealed class Replica
         if (camera != null)
         {
             Vector3 position = camera.transform.position;
-            position.x = cameraX; position.y = cameraY;
+            position.x = snapshot.CameraX; position.y = snapshot.CameraY;
             camera.transform.position = position;
-            camera.orthographicSize = cameraSize;
+            camera.orthographicSize = snapshot.CameraSize;
         }
 
-        int playerCount = reader.ReadByte();
-        if (playerCount < 1 || playerCount > 4) throw new InvalidDataException("Invalid player count");
-        var hud = new List<string>(playerCount);
-        for (int i = 0; i < playerCount; i++)
+        var hud = new List<string>(snapshot.Players.Length);
+        foreach (SnapshotPlayer player in snapshot.Players)
         {
-            int number = reader.ReadInt32(); int hits = reader.ReadInt32(); int score = reader.ReadInt32();
-            bool alive = reader.ReadBoolean(); byte powerup = reader.ReadByte();
+            int number = player.Number; int hits = player.Hits; int score = player.Score;
+            bool alive = player.Alive; byte powerup = player.Powerup;
             Player local = Game.instance.level.players.FirstOrDefault(p => p.number == number);
             if (local != null)
             {
@@ -140,37 +123,38 @@ public sealed class Replica
             hud.Add($"P{number} {(alive ? hits + " HP" : "OUT")} {score} pts" + (powerup == 0 ? "" : $" power {powerup}"));
         }
         Hud = string.Join("   ", hud);
-        int count = reader.ReadInt32();
-        if (count < 0 || count > 10000) throw new InvalidDataException("Invalid visual count");
         generation++;
         MissingSprites = 0;
-        for (int i = 0; i < count; i++) Apply(ReadState(reader));
-        if (stream.Position != stream.Length) throw new InvalidDataException("Trailing snapshot data");
+        foreach (SnapshotVisual visual in snapshot.Visuals) Apply(visual);
         var stale = visuals.Where(pair => pair.Value.Seen != generation).Select(pair => pair.Key).ToArray();
         foreach (int id in stale)
         {
-            UnityEngine.Object.Destroy(visuals[id].GameObject);
+            if (visuals[id].GameObject != null) UnityEngine.Object.Destroy(visuals[id].GameObject);
             visuals.Remove(id);
         }
     }
 
-    private void Apply(State state)
+    private void Apply(SnapshotVisual state)
     {
-        if (!visuals.TryGetValue(state.Id, out Visual visual))
+        var position = new Vector3(state.X, state.Y, state.Z);
+        var scale = new Vector3(state.ScaleX, state.ScaleY, state.ScaleZ);
+        if (!visuals.TryGetValue(state.Id, out Visual visual) || visual.GameObject == null || visual.Renderer == null)
         {
+            if (visual != null && visual.GameObject != null) UnityEngine.Object.Destroy(visual.GameObject);
             var gameObject = new GameObject("TwinShotNet Replica " + state.Id);
-            visual = new Visual { GameObject = gameObject, Renderer = gameObject.AddComponent<SpriteRenderer>(), TargetPosition = state.Position, TargetScale = state.Scale };
-            gameObject.transform.position = state.Position;
-            gameObject.transform.localScale = state.Scale;
-            visuals.Add(state.Id, visual);
+            visual = new Visual { GameObject = gameObject, Renderer = gameObject.AddComponent<SpriteRenderer>() };
+            gameObject.transform.position = position;
+            gameObject.transform.localScale = scale;
+            gameObject.transform.eulerAngles = new Vector3(0, 0, state.Rotation);
+            visuals[state.Id] = visual;
         }
         visual.Seen = generation;
-        visual.TargetPosition = state.Position;
-        visual.TargetScale = state.Scale;
+        visual.TargetPosition = position;
+        visual.TargetScale = scale;
         visual.TargetRotation = state.Rotation;
         if (sprites != null && sprites.TryGetValue(state.Sprite, out Sprite sprite)) visual.Renderer.sprite = sprite;
         else { visual.Renderer.sprite = null; MissingSprites++; }
-        visual.Renderer.color = state.Color;
+        visual.Renderer.color = new Color32(state.R, state.G, state.B, state.A);
         visual.Renderer.sortingLayerName = state.Layer;
         visual.Renderer.sortingOrder = state.Order;
         visual.Renderer.flipX = state.FlipX; visual.Renderer.flipY = state.FlipY;
@@ -183,6 +167,7 @@ public sealed class Replica
         float amount = 1 - Mathf.Exp(-Time.unscaledDeltaTime * 28);
         foreach (Visual visual in visuals.Values)
         {
+            if (visual.GameObject == null || visual.Renderer == null) continue;
             Transform transform = visual.GameObject.transform;
             transform.position = Vector3.Lerp(transform.position, visual.TargetPosition, amount);
             transform.localScale = Vector3.Lerp(transform.localScale, visual.TargetScale, amount);
@@ -194,24 +179,22 @@ public sealed class Replica
 
     public void Clear()
     {
-        foreach (Visual visual in visuals.Values) if (visual.GameObject != null) UnityEngine.Object.Destroy(visual.GameObject);
-        visuals.Clear(); sprites = null; spriteIds.Clear(); indexedAssets = null; generation = 0; currentLevel = -1; MissingSprites = 0; Hud = "Waiting for state";
+        ClearVisuals();
+        RestoreLocalRenderers();
+        sprites = null; spriteIds.Clear(); indexedAssets = null; generation = 0; currentLevel = -1; MissingSprites = 0; Hud = "Waiting for state";
     }
 
-    private static State ReadState(BinaryReader reader)
+    private void ClearVisuals()
     {
-        var state = new State
-        {
-            Id = reader.ReadInt32(), Sprite = reader.ReadString(),
-            Position = new Vector3(reader.ReadSingle(), reader.ReadSingle(), reader.ReadSingle()),
-            Scale = new Vector3(reader.ReadSingle(), reader.ReadSingle(), reader.ReadSingle()),
-            Rotation = reader.ReadSingle(),
-            Color = new Color32(reader.ReadByte(), reader.ReadByte(), reader.ReadByte(), reader.ReadByte()),
-            Layer = reader.ReadString(), Order = reader.ReadInt32(), FlipX = reader.ReadBoolean(), FlipY = reader.ReadBoolean()
-        };
-        if (state.Sprite.Length > 512 || state.Layer.Length > 128 || !Finite(state.Position.x) || !Finite(state.Position.y) || !Finite(state.Scale.x) || !Finite(state.Scale.y))
-            throw new InvalidDataException("Invalid visual state");
-        return state;
+        foreach (Visual visual in visuals.Values) if (visual.GameObject != null) UnityEngine.Object.Destroy(visual.GameObject);
+        visuals.Clear();
+    }
+
+    private void RestoreLocalRenderers()
+    {
+        foreach (var pair in hiddenRenderers)
+            if (pair.Key != null) pair.Key.enabled = pair.Value;
+        hiddenRenderers.Clear();
     }
 
     private void BuildSpriteIndex()
@@ -275,18 +258,16 @@ public sealed class Replica
         return (sprite.texture != null ? sprite.texture.name : "") + "|" + sprite.name + "|" + (int)rect.x + "," + (int)rect.y + "," + (int)rect.width + "," + (int)rect.height;
     }
 
-    private static bool IsStaticTile(Transform transform)
+    private void HideLocalDynamicRenderers()
     {
-        Level level = Game.instance != null ? Game.instance.level : null;
-        return level != null && level.tileContainer != null && transform.IsChildOf(level.tileContainer.transform);
-    }
-
-    private static void HideLocalDynamicRenderers()
-    {
+        foreach (SpriteRenderer destroyed in hiddenRenderers.Keys.Where(renderer => renderer == null).ToArray())
+            hiddenRenderers.Remove(destroyed);
         foreach (SpriteRenderer renderer in UnityEngine.Object.FindObjectsByType<SpriteRenderer>(FindObjectsSortMode.None))
             if (renderer != null && !renderer.gameObject.name.StartsWith("TwinShotNet Replica ", StringComparison.Ordinal))
+            {
+                // Preserve the first observed state even if animation re-enables it later.
+                if (!hiddenRenderers.ContainsKey(renderer)) hiddenRenderers.Add(renderer, renderer.enabled);
                 renderer.enabled = false;
+            }
     }
-
-    private static bool Finite(float value) => !float.IsNaN(value) && !float.IsInfinity(value) && Math.Abs(value) < 1000000;
 }

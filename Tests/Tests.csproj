@@ -3,5 +3,6 @@
   <ItemGroup>
     <Compile Include="../InputSlot.cs" Link="InputSlot.cs" />
     <Compile Include="../Wire.cs" Link="Wire.cs" />
+    <Compile Include="../Snapshot.cs" Link="Snapshot.cs" />
   </ItemGroup>
 </Project>

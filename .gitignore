@@ -1,58 +1,35 @@
-# Prerequisites
-*.d
+# .NET build output (all projects)
+[Bb]in/
+[Oo]bj/
+[Aa]rtifacts/
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
 
-# Object files
-*.o
-*.ko
-*.obj
-*.elf
+# Visual Studio and Rider local state
+.vs/
+.idea/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+*.sln.iml
 
-# Linker output
-*.ilk
-*.map
-*.exp
+# Test and coverage output
+[Tt]est[Rr]esults/
+coverage/
+*.coverage
+*.coveragexml
+*.dotCover
 
-# Precompiled Headers
-*.gch
-*.pch
+# NuGet packages (keep package manifests and lock files)
+*.nupkg
+*.snupkg
+**/packages/*
+!**/packages/build/
 
-# Libraries
-*.lib
-*.a
-*.la
-*.lo
-
-# Shared objects (inc. Windows DLLs)
-*.dll
-*.so
-*.so.*
-*.dylib
-
-# Executables
-*.exe
-*.out
-*.app
-*.i*86
-*.x86_64
-*.hex
-
-# Debug files
-*.dSYM/
-*.su
-*.idb
-*.pdb
-
-# Kernel Module Compile Results
-*.mod*
-*.cmd
-.tmp_versions/
-modules.order
-Module.symvers
-Mkfile.old
-dkms.conf
-
-# debug information files
-*.dwo
-
-# IDE
-.idea
+# Local logs and temporary files
+*.log
+*.tmp
+*.bak

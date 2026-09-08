@@ -12,7 +12,7 @@ using UnityEngine.SceneManagement;
 
 namespace TwinShotNet;
 
-[BepInPlugin("local.twinshot.net", "Twin Shot Net (Experimental)", "0.2.0")]
+[BepInPlugin("local.twinshot.net", "Twin Shot Net (Experimental)", "0.3.0")]
 public sealed class Plugin : BaseUnityPlugin
 {
     internal static Plugin Instance;
@@ -25,10 +25,12 @@ public sealed class Plugin : BaseUnityPlugin
     private readonly float[] lastInput = new float[4];
     private readonly byte[] applied = new byte[4];
     private FrameAssembler assembler = new FrameAssembler();
+    private FrameCache frameCache = new FrameCache();
     private readonly Replica replica = new Replica();
     private Harmony harmony;
+    private Harmony startupHarmony;
     private bool host, started, visible = true, clientSceneReady;
-    private bool oldBackground;
+    private bool oldBackground, backgroundOwned, quitting;
     internal bool PanelVisible => visible;
     private string address = "127.0.0.1", port = "27020", password = "", status = "Offline", fingerprint;
     private int assigned, sequence, players = 2;
@@ -54,20 +56,21 @@ public sealed class Plugin : BaseUnityPlugin
         fingerprint = BitConverter.ToString(hash.ComputeHash(file)).Replace("-", "");
         harmony = new Harmony("local.twinshot.net");
         harmony.PatchAll(typeof(Plugin).Assembly);
+        startupHarmony = new Harmony("local.twinshot.net.startup");
         if (Config.Bind("Startup", "DisableSteamInitialization", false,
             "Experimental: disable managed Steam initialization and restart requests. Steam features become unavailable. Restart required; does not affect native launch checks.").Value)
         {
             try
             {
-                harmony.Patch(AccessTools.Method(typeof(SteamManager), "Awake"),
+                startupHarmony.Patch(AccessTools.Method(typeof(SteamManager), "Awake"),
                     transpiler: new HarmonyMethod(typeof(SteamRestartPatch), nameof(SteamRestartPatch.TranspileOffline)));
-                harmony.Patch(AccessTools.Method(typeof(LoadingScreen), "Start"),
+                startupHarmony.Patch(AccessTools.Method(typeof(LoadingScreen), "Start"),
                     transpiler: new HarmonyMethod(typeof(SteamRestartPatch), nameof(SteamRestartPatch.TranspileOffline)));
-                harmony.Patch(AccessTools.EnumeratorMoveNext(AccessTools.Method(typeof(LoadingScreen), "Sequence")),
+                startupHarmony.Patch(AccessTools.EnumeratorMoveNext(AccessTools.Method(typeof(LoadingScreen), "Sequence")),
                     transpiler: new HarmonyMethod(typeof(SteamRestartPatch), nameof(SteamRestartPatch.TranspileDeckQuery)));
                 Logger.LogWarning("DisableSteamInitialization enabled: managed restart and Init calls disabled. Steam features unavailable.");
             }
-            catch (Exception ex) { Logger.LogError("Could not apply optional Steam initialization patch: " + ex); }
+            catch (Exception ex) { startupHarmony.UnpatchSelf(); Logger.LogError("Optional Steam initialization patches rolled back: " + ex); }
         }
         else
         if (Config.Bind("Startup", "SkipSteamRestart", false,
@@ -75,15 +78,15 @@ public sealed class Plugin : BaseUnityPlugin
         {
             try
             {
-                harmony.Patch(AccessTools.Method(typeof(SteamManager), "Awake"),
+                startupHarmony.Patch(AccessTools.Method(typeof(SteamManager), "Awake"),
                     transpiler: new HarmonyMethod(typeof(SteamRestartPatch), nameof(SteamRestartPatch.Transpile)));
-                harmony.Patch(AccessTools.Method(typeof(LoadingScreen), "Start"),
+                startupHarmony.Patch(AccessTools.Method(typeof(LoadingScreen), "Start"),
                     transpiler: new HarmonyMethod(typeof(SteamRestartPatch), nameof(SteamRestartPatch.Transpile)));
                 Logger.LogWarning("SkipSteamRestart enabled. Steam initialization is unchanged; standalone startup is not guaranteed.");
             }
-            catch (Exception ex) { Logger.LogError("Could not apply optional Steam restart patch: " + ex); }
+            catch (Exception ex) { startupHarmony.UnpatchSelf(); Logger.LogError("Optional Steam restart patches rolled back: " + ex); }
         }
-        Logger.LogInfo("TwinShotNet 0.2.0 loaded. F8 opens the experimental network panel.");
+        Logger.LogInfo("TwinShotNet 0.3.0 loaded. F8 opens the experimental network panel.");
     }
 
     private void Open(bool asHost)
@@ -97,6 +100,7 @@ public sealed class Plugin : BaseUnityPlugin
         occupied[0] = asHost;
         visible = true;
         oldBackground = Application.runInBackground;
+        backgroundOwned = true;
         Application.runInBackground = true;
         var listener = new EventBasedNetListener();
         network = new NetManager(listener) { AutoRecycle = true, IPv6Enabled = false, DisconnectTimeout = 5000 };
@@ -154,6 +158,20 @@ public sealed class Plugin : BaseUnityPlugin
             if (host)
             {
                 if (!peers.TryGetValue(peer, out int slot)) return;
+                if (type == Wire.NackPacketType)
+                {
+                    if (!started || method != DeliveryMethod.Unreliable || reader.AvailableBytes < 8 ||
+                        reader.AvailableBytes > 6 + 2 * Wire.MaxRepairChunks) return;
+                    if (!Wire.TryDecodeNack(reader.GetRemainingBytes(), out var request)) return;
+                    foreach (var chunk in frameCache.Serve(request, Wire.NowMilliseconds))
+                    {
+                        var writer = new NetDataWriter();
+                        writer.Put((byte)4); writer.Put(chunk.Sequence);
+                        writer.Put((ushort)chunk.Index); writer.Put((ushort)chunk.Total); writer.Put(chunk.Payload);
+                        peer.Send(writer, DeliveryMethod.Unreliable);
+                    }
+                    return;
+                }
                 if (type == 5 && !started && reader.AvailableBytes == 2)
                 {
                     int skin = reader.GetByte(); bool isReady = reader.GetBool();
@@ -265,9 +283,19 @@ public sealed class Plugin : BaseUnityPlugin
         network?.PollEvents();
         if (network == null) return;
         float now = Time.realtimeSinceStartup;
+        double transportNow = Wire.NowMilliseconds;
+        if (host) frameCache.Expire(transportNow);
+        else if (server != null && started)
+        {
+            var request = assembler.GetMissingRequest(transportNow);
+            if (request != null)
+            {
+                var writer = new NetDataWriter(); writer.Put(Wire.NackPacketType); writer.Put(Wire.EncodeNack(request));
+                server.Send(writer, DeliveryMethod.Unreliable);
+            }
+        }
         if (host)
         {
-            inputs[0].Receive(visible ? (byte)0 : ReadKeys());
             for (int i = 1; i < 4; i++) if (now - lastInput[i] > 0.5f) inputs[i].Clear();
         }
         else if (server != null && assigned != 0)
@@ -296,6 +324,7 @@ public sealed class Plugin : BaseUnityPlugin
                 byte[] bytes = Wire.Pack(replica.Capture());
                 int count = (bytes.Length + Wire.ChunkSize - 1) / Wire.ChunkSize;
                 sequence++;
+                frameCache.Store(sequence, bytes, Wire.NowMilliseconds);
                 for (int i = 0; i < count; i++)
                 {
                     var writer = new NetDataWriter(); writer.Put((byte)4); writer.Put(sequence); writer.Put((ushort)i); writer.Put((ushort)count);
@@ -325,7 +354,8 @@ public sealed class Plugin : BaseUnityPlugin
     internal void ApplyInput(int number)
     {
         int index = number - 1;
-        byte value = started ? inputs[index].Advance() : (byte)0;
+        // P1 uses native input; this path only suppresses it while the panel is open or unfocused.
+        byte value = started && index != 0 ? inputs[index].Advance() : (byte)0;
         byte pressed = (byte)(value & ~applied[index]); applied[index] = value;
         var c = GameInput.Player(number);
         c.left = (value & 1) != 0; c.right = (value & 2) != 0; c.up = (value & 4) != 0; c.down = (value & 8) != 0;
@@ -395,15 +425,23 @@ public sealed class Plugin : BaseUnityPlugin
         bool wasStarted = started;
         network?.Stop(); network = null; server = null; peers.Clear();
         started = false; host = false; assigned = 0; clientSceneReady = false; pendingFrame = null;
-        assembler = new FrameAssembler(); sequence = 0;
+        assembler = new FrameAssembler(); frameCache = new FrameCache(); sequence = 0;
+        nextInput = nextSnapshot = lastFrame = connectedAt = 0; lastSent = 0;
         foreach (var input in inputs) input.Clear();
         Array.Clear(applied, 0, applied.Length);
-        replica.Clear(); Application.runInBackground = oldBackground;
+        replica.Clear();
+        if (backgroundOwned) { Application.runInBackground = oldBackground; backgroundOwned = false; }
         status = "Offline"; visible = true;
         if (wasStarted && returnToMenu) SceneManager.LoadScene("Menus");
     }
 
-    private void OnDestroy() { Close(false); harmony?.UnpatchSelf(); Instance = null; }
+    private void OnApplicationQuit() { quitting = true; Close(false); }
+    private void OnDisable() { Close(!quitting); }
+    private void OnDestroy()
+    {
+        try { Close(!quitting); }
+        finally { startupHarmony?.UnpatchSelf(); harmony?.UnpatchSelf(); Instance = null; }
+    }
 
     private void BroadcastLobby()
     {
@@ -426,7 +464,7 @@ public sealed class Plugin : BaseUnityPlugin
 [HarmonyPatch(typeof(MenuScene), "FixedUpdate")]
 internal static class LobbyMenuPatch
 {
-    private static bool Prefix() => Plugin.Instance == null || !Plugin.Instance.InLobby;
+    private static bool Prefix() => Plugin.Instance == null || !Plugin.Instance.isActiveAndEnabled || !Plugin.Instance.InLobby;
 }
 
 [HarmonyPatch(typeof(GameInput), "AdvancePlayer")]
@@ -434,7 +472,7 @@ internal static class InputPatch
 {
     private static bool Prefix(int number)
     {
-        if (Plugin.Instance == null || !Plugin.Instance.Hosting || Game.instance == null) return true;
+        if (Plugin.Instance == null || !Plugin.Instance.isActiveAndEnabled || !Plugin.Instance.Hosting || Game.instance == null) return true;
         if (number == 1 && !Plugin.Instance.PanelVisible && Application.isFocused) return true;
         Plugin.Instance.ApplyInput(number);
         return false;
@@ -444,5 +482,5 @@ internal static class InputPatch
 [HarmonyPatch(typeof(Game), "Update")]
 internal static class ClientGamePatch
 {
-    private static bool Prefix() => Plugin.Instance == null || !Plugin.Instance.Client;
+    private static bool Prefix() => Plugin.Instance == null || !Plugin.Instance.isActiveAndEnabled || !Plugin.Instance.Client;
 }
