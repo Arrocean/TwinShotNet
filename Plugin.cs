@@ -284,6 +284,12 @@ public sealed class Plugin : BaseUnityPlugin
         if (Input.GetKeyDown(KeyCode.F8)) visible = !visible;
         if (!started && Input.GetKeyDown(KeyCode.Escape)) { if (Client) ChangeLobby(skins[Mathf.Max(0, assigned - 1)], false); else Close(true); }
         if (Client && !started && Input.GetKeyDown(KeyCode.Space)) ChangeLobby(skins[Mathf.Max(0, assigned - 1)], !ready[Mathf.Max(0, assigned - 1)]);
+        if (Client && !started && assigned > 0)
+        {
+            int slot = assigned - 1;
+            if (Input.GetKeyDown(KeyCode.LeftArrow) || Input.GetKeyDown(KeyCode.A)) ChangeLobby(Mathf.Max(0, skins[slot] - 1), false);
+            if (Input.GetKeyDown(KeyCode.RightArrow) || Input.GetKeyDown(KeyCode.D)) ChangeLobby(Mathf.Min(3, skins[slot] + 1), false);
+        }
         network?.PollEvents();
         if (network == null) return;
         float now = Time.realtimeSinceStartup;
@@ -399,23 +405,9 @@ public sealed class Plugin : BaseUnityPlugin
         {
             if (!started)
             {
-                GUILayout.Label("Room / Choose color and ready");
-                string[] names = { "Pink", "Orange", "Purple", "Blue" };
-                int own = host ? 0 : assigned - 1;
-                for (int i = 0; i < 4; i++)
-                {
-                    GUILayout.Label($"P{i + 1}: " + (occupied[i] ? names[skins[i]] + (ready[i] ? " [READY]" : " [WAITING]") : "Empty"));
-                    if (!occupied[i] || own != i) continue;
-                    int selection = GUILayout.SelectionGrid(skins[i], names, 4);
-                    if (selection != skins[i]) ChangeLobby(selection, false);
-                    if (GUILayout.Button(ready[i] ? "Cancel ready" : "Ready")) ChangeLobby(skins[i], !ready[i]);
-                }
-                if (host)
-                {
-                    GUI.enabled = peers.Count > 0 && Enumerable.Range(0, 4).All(i => !occupied[i] || ready[i]);
-                    if (GUILayout.Button("Start (Acropolis 1)")) StartMatch();
-                    GUI.enabled = true;
-                }
+                GUILayout.Label("Character select is shown in the game UI.");
+                GUILayout.Label("Use the original character screen to join, change skin and ready.");
+                GUILayout.Label(status);
             }
             if (host && started && Game.instance != null && GUILayout.Button("Restart level"))
                 Game.instance.LoadAndStartLevel(Game.levelId, Game.instance.nextLevelAfterBonusRound, false);
@@ -497,6 +489,30 @@ public sealed class Plugin : BaseUnityPlugin
             server.Send(writer, DeliveryMethod.ReliableOrdered);
         }
     }
+
+    internal bool AllowNativeContinue()
+    {
+        if (!Hosting || started) return true;
+        if (peers.Count == 0 || Enumerable.Range(0, 4).Any(i => occupied[i] && !ready[i]))
+        {
+            status = "Waiting for every player to be ready";
+            return false;
+        }
+        StartMatch();
+        return false;
+    }
+
+    internal bool HandleNativeJoin(object box, bool back, int direction)
+    {
+        if (!Client || started || box == null || assigned <= 0) return true;
+        int number = (int)box.GetType().GetField("number", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic).GetValue(box);
+        if (number != assigned) return false;
+        int slot = assigned - 1;
+        if (back) ChangeLobby(skins[slot], false);
+        else if (direction != 0) ChangeLobby(Mathf.Clamp(skins[slot] + direction, 0, 3), false);
+        else ChangeLobby(skins[slot], !ready[slot]);
+        return false;
+    }
 }
 
 [HarmonyPatch(typeof(MenuScene), "FixedUpdate")]
@@ -521,4 +537,43 @@ internal static class InputPatch
 internal static class ClientGamePatch
 {
     private static bool Prefix() => Plugin.Instance == null || !Plugin.Instance.isActiveAndEnabled || !Plugin.Instance.Client;
+}
+
+[HarmonyPatch(typeof(CharacterSelectMenu), "ContinueToNextScreen")]
+internal static class CharacterSelectContinuePatch
+{
+    private static bool Prefix()
+    {
+        Plugin plugin = Plugin.Instance;
+        return plugin == null || !plugin.isActiveAndEnabled || plugin.AllowNativeContinue();
+    }
+}
+
+[HarmonyPatch(typeof(PlayerJoinBox), "OnPressLeft")]
+internal static class CharacterSelectLeftPatch
+{
+    private static bool Prefix(PlayerJoinBox __instance) => Plugin.Instance == null || !Plugin.Instance.isActiveAndEnabled || Plugin.Instance.HandleNativeJoin(__instance, false, -1);
+}
+
+[HarmonyPatch(typeof(PlayerJoinBox), "OnPressRight")]
+internal static class CharacterSelectRightPatch
+{
+    private static bool Prefix(PlayerJoinBox __instance) => Plugin.Instance == null || !Plugin.Instance.isActiveAndEnabled || Plugin.Instance.HandleNativeJoin(__instance, false, 1);
+}
+
+[HarmonyPatch(typeof(PlayerJoinBox), "Back")]
+internal static class CharacterSelectBackPatch
+{
+    private static bool Prefix(PlayerJoinBox __instance) => Plugin.Instance == null || !Plugin.Instance.isActiveAndEnabled || Plugin.Instance.HandleNativeJoin(__instance, true, 0);
+}
+
+[HarmonyPatch(typeof(PlayerJoinBox), "Join")]
+internal static class CharacterSelectJoinPatch
+{
+    private static bool Prefix(PlayerJoinBox __instance)
+    {
+        Plugin plugin = Plugin.Instance;
+        if (plugin == null || !plugin.isActiveAndEnabled) return true;
+        return plugin.HandleNativeJoin(__instance, false, 0);
+    }
 }
