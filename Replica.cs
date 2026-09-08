@@ -28,6 +28,7 @@ public sealed class Replica
     private Assets indexedAssets;
     private int generation;
     private int currentLevel = -1;
+    private readonly Dictionary<int, int> displayedScores = new Dictionary<int, int>();
     public int MissingSprites { get; private set; }
     public string Hud { get; private set; } = "Waiting for state";
 
@@ -63,7 +64,7 @@ public sealed class Replica
         foreach (SpriteRenderer renderer in renderers)
         {
             Transform transform = renderer.transform;
-            writer.Write(renderer.GetInstanceID());
+            writer.Write(StableVisualId(renderer));
             writer.Write(spriteIds.TryGetValue(renderer.sprite, out string key) ? key : "missing");
             writer.Write(transform.position.x); writer.Write(transform.position.y); writer.Write(transform.position.z);
             Vector3 scale = transform.lossyScale;
@@ -118,7 +119,7 @@ public sealed class Replica
             {
                 local.hits = hits; local.score = score; local.alive = alive;
                 local.powerup = (Player.PowerupType)powerup;
-                Game.instance.ui.Player(local).score.Advance(1f);
+                UpdateScoreUi(number, local.score, score);
             }
             hud.Add($"P{number} {(alive ? hits + " HP" : "OUT")} {score} pts" + (powerup == 0 ? "" : $" power {powerup}"));
         }
@@ -188,6 +189,35 @@ public sealed class Replica
     {
         foreach (Visual visual in visuals.Values) if (visual.GameObject != null) UnityEngine.Object.Destroy(visual.GameObject);
         visuals.Clear();
+        displayedScores.Clear();
+    }
+
+    private void UpdateScoreUi(int number, int score, int previousScore)
+    {
+        displayedScores.TryGetValue(number, out int oldScore);
+        displayedScores[number] = score;
+        if (oldScore == score) return;
+        try
+        {
+            object playerUi = Game.instance.ui.Player(Game.instance.level.players.FirstOrDefault(p => p.number == number));
+            object scoreUi = playerUi?.GetType().GetField("score", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)?.GetValue(playerUi);
+            MethodInfo advance = scoreUi?.GetType().GetMethod("Advance", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            if (advance != null) advance.Invoke(scoreUi, new object[] { (float)(score - oldScore) });
+        }
+        catch (Exception ex) { Debug.LogWarning("[TwinShotNet] Score UI update unavailable: " + ex.Message); }
+    }
+
+    private static int StableVisualId(SpriteRenderer renderer)
+    {
+        string path = renderer.transform.name;
+        Transform parent = renderer.transform.parent;
+        while (parent != null) { path = parent.name + "/" + path; parent = parent.parent; }
+        unchecked
+        {
+            int hash = 17;
+            foreach (char c in path) hash = hash * 31 + c;
+            return hash == 0 ? 1 : hash;
+        }
     }
 
     private void RestoreLocalRenderers()

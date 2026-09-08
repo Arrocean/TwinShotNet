@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Security.Cryptography;
 using BepInEx;
 using HarmonyLib;
@@ -12,7 +13,7 @@ using UnityEngine.SceneManagement;
 
 namespace TwinShotNet;
 
-[BepInPlugin("local.twinshot.net", "Twin Shot Net (Experimental)", "0.3.0")]
+[BepInPlugin("local.twinshot.net", "Twin Shot Net (Experimental)", "0.4.0")]
 public sealed class Plugin : BaseUnityPlugin
 {
     internal static Plugin Instance;
@@ -86,7 +87,7 @@ public sealed class Plugin : BaseUnityPlugin
             }
             catch (Exception ex) { startupHarmony.UnpatchSelf(); Logger.LogError("Optional Steam restart patches rolled back: " + ex); }
         }
-        Logger.LogInfo("TwinShotNet 0.3.0 loaded. F8 opens the experimental network panel.");
+        Logger.LogInfo("TwinShotNet 0.4.0 loaded. F8 opens the network panel.");
     }
 
     private void Open(bool asHost)
@@ -122,8 +123,9 @@ public sealed class Plugin : BaseUnityPlugin
                 var writer = new NetDataWriter(); writer.Put((byte)1); writer.Put((byte)(slot + 1)); peer.Send(writer, DeliveryMethod.ReliableOrdered);
                 status = $"Hosting: {peers.Count + 1}/4 players";
                 BroadcastLobby();
+                ShowNativeCharacterSelect();
             }
-            else { server = peer; connectedAt = Time.realtimeSinceStartup; status = "Connected; waiting for host"; }
+            else { server = peer; connectedAt = Time.realtimeSinceStartup; status = "Connected; waiting for host"; ShowNativeCharacterSelect(); }
         };
         listener.PeerDisconnectedEvent += (peer, info) =>
         {
@@ -194,7 +196,7 @@ public sealed class Plugin : BaseUnityPlugin
                     occupied[i] = reader.GetBool(); skins[i] = reader.GetByte(); ready[i] = reader.GetBool();
                     if (skins[i] > 3) throw new InvalidDataException("Invalid lobby skin");
                 }
-                visible = true; return;
+                visible = true; SyncNativeLobby(); return;
             }
             if (type == 1)
             {
@@ -280,6 +282,8 @@ public sealed class Plugin : BaseUnityPlugin
     private void Update()
     {
         if (Input.GetKeyDown(KeyCode.F8)) visible = !visible;
+        if (!started && Input.GetKeyDown(KeyCode.Escape)) { if (Client) ChangeLobby(skins[Mathf.Max(0, assigned - 1)], false); else Close(true); }
+        if (Client && !started && Input.GetKeyDown(KeyCode.Space)) ChangeLobby(skins[Mathf.Max(0, assigned - 1)], !ready[Mathf.Max(0, assigned - 1)]);
         network?.PollEvents();
         if (network == null) return;
         float now = Time.realtimeSinceStartup;
@@ -371,6 +375,7 @@ public sealed class Plugin : BaseUnityPlugin
     {
         if (Client && clientSceneReady) GUI.Label(new Rect(12, Screen.height - 55, Screen.width - 24, 50), replica.Hud);
         GUI.Label(new Rect(12, 8, Screen.width - 24, 25), "TwinShotNet EXPERIMENTAL | F8 | " + status);
+        if (Client && !started) return;
         if (!visible) return;
         Cursor.visible = true;
         window.width = Mathf.Min(430, Screen.width - 20);
@@ -448,6 +453,39 @@ public sealed class Plugin : BaseUnityPlugin
         var writer = new NetDataWriter(); writer.Put((byte)6);
         for (int i = 0; i < 4; i++) { writer.Put(occupied[i]); writer.Put((byte)skins[i]); writer.Put(ready[i]); }
         foreach (var peer in peers.Keys) peer.Send(writer, DeliveryMethod.ReliableOrdered);
+        SyncNativeLobby();
+    }
+
+    private void SyncNativeLobby()
+    {
+        try
+        {
+            var flags = BindingFlags.Static | BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+            object menu = typeof(MenuScene).GetField("characterSelectMenu", flags)?.GetValue(null);
+            if (menu == null) return;
+            var boxes = menu.GetType().GetField("boxes", flags)?.GetValue(menu) as Array;
+            if (boxes == null) return;
+            for (int i = 0; i < Math.Min(4, boxes.Length); i++)
+            {
+                object box = boxes.GetValue(i); if (box == null) continue;
+                var type = box.GetType();
+                type.GetField("selectedSkin", flags)?.SetValue(box, skins[i]);
+                type.GetField("state", flags)?.SetValue(box, occupied[i] ? (ready[i] ? 2 : 1) : 0);
+            }
+        }
+        catch (Exception ex) { Logger.LogDebug("Native lobby sync unavailable: " + ex.Message); }
+    }
+
+    private void ShowNativeCharacterSelect()
+    {
+        try
+        {
+            object menuScene = typeof(MenuScene).GetField("instance", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic)?.GetValue(null);
+            object menu = menuScene?.GetType().GetField("characterSelectMenu", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)?.GetValue(menuScene);
+            menu?.GetType().GetMethod("Appear", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)?.Invoke(menu, null);
+            SyncNativeLobby();
+        }
+        catch (Exception ex) { Logger.LogDebug("Native character select unavailable: " + ex.Message); }
     }
 
     private void ChangeLobby(int skin, bool isReady)
