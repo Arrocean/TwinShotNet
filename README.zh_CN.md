@@ -1,5 +1,7 @@
 # TwinShotNet
 
+[EN](README.md) | [中文](README.zh_CN.md)
+
 TwinShotNet 是一个实验性的 BepInEx 5 插件，为《Twin Shot Deluxe》增加由主机权威控制的 UDP 多人游戏功能。当前插件和协议版本为 **0.5.1**。所有玩家必须使用相同的插件版本和游戏版本；版本不匹配时会在连接阶段被拒绝。
 
 ## 架构

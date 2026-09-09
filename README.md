@@ -1,5 +1,7 @@
 # TwinShotNet
 
+[EN](README.md) | [中文](README.zh_CN.md)
+
 Experimental BepInEx 5 plugin that adds host-authoritative UDP multiplayer to Twin Shot Deluxe. The current plugin and protocol version is **0.5.1**. All players must use the same plugin and game build; mismatched builds are rejected during connection.
 
 ## Architecture
