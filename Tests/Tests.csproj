@@ -3,6 +3,11 @@
   <ItemGroup>
     <Compile Include="../InputSlot.cs" Link="InputSlot.cs" />
     <Compile Include="../Wire.cs" Link="Wire.cs" />
+    <Compile Include="../Transport/FrameAssembler.cs" Link="Transport/FrameAssembler.cs" />
+    <Compile Include="../Transport/FrameCache.cs" Link="Transport/FrameCache.cs" />
+    <Compile Include="../Transport/TransportClock.cs" Link="Transport/TransportClock.cs" />
+    <Compile Include="../Transport/MissingChunks.cs" Link="Transport/MissingChunks.cs" />
+    <Compile Include="../Transport/SnapshotChunk.cs" Link="Transport/SnapshotChunk.cs" />
     <Compile Include="../Snapshot.cs" Link="Snapshot.cs" />
     <Compile Include="../PacketValidation.cs" Link="PacketValidation.cs" />
   </ItemGroup>

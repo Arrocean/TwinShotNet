@@ -2,6 +2,10 @@
 
 Experimental BepInEx 5 plugin that adds host-authoritative UDP multiplayer to Twin Shot Deluxe. The current plugin and protocol version is **0.5.0**. All players must use the same plugin and game build; mismatched builds are rejected during connection.
 
+## Architecture
+
+The codebase layout, lifecycle, protocol constraints, and test coverage are documented in [docs/architecture.md](docs/architecture.md).
+
 ## Features
 
 - Host runs the original game simulation at its native 60 Hz.
@@ -49,7 +53,7 @@ dotnet build -c Release -p:Deploy=true
 dotnet run --project Tests/Tests.csproj -c Release
 ```
 
-The deploy target copies the plugin DLL and `LiteNetLib.dll` to the default local game installation. The automated snapshot/transport suite currently contains 60 checks.
+The deploy target copies the plugin DLL and `LiteNetLib.dll` to the default local game installation. For validation without deploying, use `dotnet build TwinShotNet.csproj -c Release -p:Deploy=false`. The automated suite currently contains 395 checks: 232 snapshot, 103 packet-boundary, and 60 input/transport checks.
 
 ## Start a session
 
