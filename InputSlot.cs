@@ -5,21 +5,33 @@ namespace TwinShotNet;
 // Queue transitions, not only the latest state: a press/release within one tick must survive.
 public sealed class InputSlot
 {
-    private readonly Queue<byte> pending = new Queue<byte>();
+    private readonly Queue<byte> _pending = new Queue<byte>();
     public byte Held { get; private set; }
-    private byte lastReceived;
+    private byte _lastReceived;
+
     public void Receive(byte value)
     {
         value &= 63;
-        if (value == lastReceived) return;
-        lastReceived = value;
-        if (pending.Count >= 120) { Clear(); return; }
-        pending.Enqueue(value);
+        if (value == _lastReceived) return;
+        _lastReceived = value;
+        if (_pending.Count >= 120)
+        {
+            Clear();
+            return;
+        }
+
+        _pending.Enqueue(value);
     }
+
     public byte Advance()
     {
-        if (pending.Count != 0) Held = pending.Dequeue();
+        if (_pending.Count != 0) Held = _pending.Dequeue();
         return Held;
     }
-    public void Clear() { pending.Clear(); Held = lastReceived = 0; }
+
+    public void Clear()
+    {
+        _pending.Clear();
+        Held = _lastReceived = 0;
+    }
 }

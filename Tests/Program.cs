@@ -13,6 +13,7 @@ static class Program
     static void Main()
     {
         SnapshotTests.Run();
+        PacketTests.Run();
         var a = new InputSlot(); var b = new InputSlot();
         a.Receive(16); a.Receive(0);
         Check(a.Advance() == 16 && a.Advance() == 0, "Short tap preserved");

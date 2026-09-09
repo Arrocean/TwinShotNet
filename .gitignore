@@ -15,6 +15,7 @@ x86/
 *.userosscache
 *.sln.docstates
 *.sln.iml
+.zcode
 
 # Test and coverage output
 [Tt]est[Rr]esults/

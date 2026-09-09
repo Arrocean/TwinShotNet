@@ -61,18 +61,25 @@ public static class Wire
             if (index <= previous || index >= total) return false;
             previous = index;
         }
+
         return true;
     }
+
     public static byte[] Pack(byte[] raw)
     {
+        if (raw == null) throw new ArgumentNullException(nameof(raw));
         if (raw.Length > MaxRaw) throw new InvalidDataException("Snapshot too large");
         using var output = new MemoryStream();
         using (var zip = new DeflateStream(output, CompressionLevel.Fastest, true)) zip.Write(raw, 0, raw.Length);
         if (output.Length > MaxPacked) throw new InvalidDataException("Compressed snapshot too large");
         return output.ToArray();
     }
+
     public static byte[] Unpack(byte[] packed)
     {
+        if (packed == null) throw new ArgumentNullException(nameof(packed));
+        if (packed.Length < 1 || packed.Length > MaxPacked)
+            throw new InvalidDataException("Invalid compressed snapshot size");
         using var source = new MemoryStream(packed);
         using var zip = new DeflateStream(source, CompressionMode.Decompress);
         using var output = new MemoryStream();
@@ -83,6 +90,7 @@ public static class Wire
             if (output.Length + count > MaxRaw) throw new InvalidDataException("Snapshot exceeds limit");
             output.Write(buffer, 0, count);
         }
+
         return output.ToArray();
     }
 }
@@ -99,11 +107,12 @@ public sealed class FrameAssembler
         public int Attempts;
         public int RequestCursor;
     }
-    private readonly SortedDictionary<int, Frame> frames = new SortedDictionary<int, Frame>();
-    private readonly TransportClock clock = new TransportClock();
-    private int retired = -1;
-    private double nextRequest;
-    public int PendingFrames => frames.Count;
+
+    private readonly SortedDictionary<int, Frame> _frames = new SortedDictionary<int, Frame>();
+    private readonly TransportClock _clock = new TransportClock();
+    private int _retired = -1;
+    private double _nextRequest;
+    public int PendingFrames => _frames.Count;
 
     // Use one monotonic millisecond clock throughout a session. The legacy
     // overload uses Wire.NowMilliseconds; explicit timestamps permit simulation.
@@ -113,40 +122,55 @@ public sealed class FrameAssembler
     public byte[] Add(int sequence, int index, int total, byte[] payload, double nowMs)
     {
         Expire(nowMs);
-        if (sequence <= retired || sequence < 0 || total < 1 || total > Wire.MaxChunks || index < 0 || index >= total || payload == null || payload.Length == 0 || payload.Length > Wire.ChunkSize) return null;
-        if (!frames.TryGetValue(sequence, out var frame))
+        if (sequence <= _retired || sequence < 0 || total < 1 || total > Wire.MaxChunks || index < 0 ||
+            index >= total || payload == null || payload.Length == 0 || payload.Length > Wire.ChunkSize) return null;
+        if (!_frames.TryGetValue(sequence, out var frame))
         {
-            if (frames.Count >= Wire.FrameWindow)
+            if (_frames.Count >= Wire.FrameWindow)
             {
-                using var e = frames.GetEnumerator(); e.MoveNext();
+                using var e = _frames.GetEnumerator();
+                e.MoveNext();
                 if (sequence < e.Current.Key) return null;
                 RetireThrough(e.Current.Key);
             }
-            frames[sequence] = frame = new Frame
+
+            _frames[sequence] = frame = new Frame
             {
                 Parts = new byte[total][], Created = nowMs,
                 NextRequest = nowMs + Wire.NackIntervalMs
             };
         }
+
         if (frame.Parts.Length != total || frame.Parts[index] != null) return null;
         frame.Parts[index] = (byte[])payload.Clone();
         frame.Received++;
         frame.Size += payload.Length;
-        if (frame.Size > Wire.MaxPacked) { RetireThrough(sequence); return null; }
+        if (frame.Size > Wire.MaxPacked)
+        {
+            RetireThrough(sequence);
+            return null;
+        }
+
         if (frame.Received != total) return null;
         var result = new byte[frame.Size];
         int offset = 0;
-        foreach (var part in frame.Parts) { Buffer.BlockCopy(part, 0, result, offset, part.Length); offset += part.Length; }
+        foreach (var part in frame.Parts)
+        {
+            Buffer.BlockCopy(part, 0, result, offset, part.Length);
+            offset += part.Length;
+        }
+
         RetireThrough(sequence);
         return result;
     }
 
     public void Expire(double nowMs)
     {
-        clock.Advance(nowMs);
-        int through = retired;
-        foreach (var entry in frames)
-            if (nowMs - entry.Value.Created >= Wire.AssemblyLifetimeMs) through = Math.Max(through, entry.Key);
+        _clock.Advance(nowMs);
+        int through = _retired;
+        foreach (var entry in _frames)
+            if (nowMs - entry.Value.Created >= Wire.AssemblyLifetimeMs)
+                through = Math.Max(through, entry.Key);
         RetireThrough(through);
     }
 
@@ -154,19 +178,21 @@ public sealed class FrameAssembler
     {
         // A permanent high-water mark prevents expired/evicted frames from being
         // resurrected by replay, without an unbounded tombstone collection.
-        retired = Math.Max(retired, sequence);
+        _retired = Math.Max(_retired, sequence);
         var remove = new List<int>();
-        foreach (var key in frames.Keys) if (key <= retired) remove.Add(key);
-        foreach (var key in remove) frames.Remove(key);
+        foreach (var key in _frames.Keys)
+            if (key <= _retired)
+                remove.Add(key);
+        foreach (var key in remove) _frames.Remove(key);
     }
 
     public MissingChunks GetMissingRequest(double nowMs)
     {
         Expire(nowMs);
-        if (nowMs < nextRequest) return null;
+        if (nowMs < _nextRequest) return null;
         Frame candidate = null;
         int sequence = -1;
-        foreach (var entry in frames)
+        foreach (var entry in _frames)
         {
             var frame = entry.Value;
             if (frame.Attempts >= Wire.MaxNackAttempts || nowMs < frame.NextRequest) continue;
@@ -174,6 +200,7 @@ public sealed class FrameAssembler
             candidate = frame;
             sequence = entry.Key;
         }
+
         if (candidate == null) return null;
         var indices = new List<int>();
         int total = candidate.Parts.Length;
@@ -183,11 +210,12 @@ public sealed class FrameAssembler
             int index = (candidate.RequestCursor + scanned++) % total;
             if (candidate.Parts[index] == null) indices.Add(index);
         }
+
         candidate.RequestCursor = (candidate.RequestCursor + scanned) % total;
         indices.Sort();
         candidate.Attempts++;
         candidate.NextRequest = nowMs + Wire.RetryIntervalMs;
-        nextRequest = nowMs + Wire.NackIntervalMs;
+        _nextRequest = nowMs + Wire.NackIntervalMs;
         return new MissingChunks(sequence, indices.ToArray());
     }
 }
@@ -196,7 +224,12 @@ public sealed class MissingChunks
 {
     public int Sequence { get; }
     public int[] Indices { get; }
-    public MissingChunks(int sequence, int[] indices) { Sequence = sequence; Indices = indices; }
+
+    public MissingChunks(int sequence, int[] indices)
+    {
+        Sequence = sequence;
+        Indices = indices;
+    }
 }
 
 public sealed class SnapshotChunk
@@ -205,8 +238,14 @@ public sealed class SnapshotChunk
     public int Index { get; }
     public int Total { get; }
     public byte[] Payload { get; }
+
     internal SnapshotChunk(int sequence, int index, int total, byte[] payload)
-    { Sequence = sequence; Index = index; Total = total; Payload = payload; }
+    {
+        Sequence = sequence;
+        Index = index;
+        Total = total;
+        Payload = payload;
+    }
 }
 
 // One cache per host session, shared by all authenticated peers. Its repair
@@ -219,35 +258,40 @@ public sealed class FrameCache
         public byte[] Packed;
         public double Created;
     }
-    private readonly SortedDictionary<int, Frame> frames = new SortedDictionary<int, Frame>();
-    private readonly TransportClock clock = new TransportClock();
-    private int latest = -1;
-    private double nextService;
-    public int Count => frames.Count;
+
+    private readonly SortedDictionary<int, Frame> _frames = new SortedDictionary<int, Frame>();
+    private readonly TransportClock _clock = new TransportClock();
+    private int _latest = -1;
+    private double _nextService;
+    public int Count => _frames.Count;
 
     // Sequences must increase for the whole session, including after expiration.
     // Duplicate Store calls never replace bytes or refresh the creation time.
     public bool Store(int sequence, byte[] packed, double nowMs)
     {
         Expire(nowMs);
-        if (sequence <= latest || sequence < 0 || packed == null || packed.Length < 1 || packed.Length > Wire.MaxPacked) return false;
-        if (frames.Count >= Wire.FrameWindow)
+        if (sequence <= _latest || sequence < 0 || packed == null || packed.Length < 1 ||
+            packed.Length > Wire.MaxPacked) return false;
+        if (_frames.Count >= Wire.FrameWindow)
         {
-            using var e = frames.GetEnumerator(); e.MoveNext();
-            frames.Remove(e.Current.Key);
+            using var e = _frames.GetEnumerator();
+            e.MoveNext();
+            _frames.Remove(e.Current.Key);
         }
-        latest = sequence;
-        frames.Add(sequence, new Frame { Packed = (byte[])packed.Clone(), Created = nowMs });
+
+        _latest = sequence;
+        _frames.Add(sequence, new Frame { Packed = (byte[])packed.Clone(), Created = nowMs });
         return true;
     }
 
     public void Expire(double nowMs)
     {
-        clock.Advance(nowMs);
+        _clock.Advance(nowMs);
         var remove = new List<int>();
-        foreach (var entry in frames)
-            if (nowMs - entry.Value.Created >= Wire.CacheLifetimeMs) remove.Add(entry.Key);
-        foreach (int sequence in remove) frames.Remove(sequence);
+        foreach (var entry in _frames)
+            if (nowMs - entry.Value.Created >= Wire.CacheLifetimeMs)
+                remove.Add(entry.Key);
+        foreach (int sequence in remove) _frames.Remove(sequence);
     }
 
     // Returns at most 32 chunks per 50 ms across ALL requests. There is no send
@@ -255,11 +299,11 @@ public sealed class FrameCache
     public SnapshotChunk[] Serve(MissingChunks request, double nowMs)
     {
         Expire(nowMs);
-        if (nowMs < nextService || request == null || !frames.TryGetValue(request.Sequence, out var frame))
+        if (nowMs < _nextService || request == null || !_frames.TryGetValue(request.Sequence, out var frame))
             return Array.Empty<SnapshotChunk>();
         int total = (frame.Packed.Length + Wire.ChunkSize - 1) / Wire.ChunkSize;
         if (!Wire.ValidNack(request.Sequence, request.Indices, total)) return Array.Empty<SnapshotChunk>();
-        nextService = nowMs + Wire.NackIntervalMs;
+        _nextService = nowMs + Wire.NackIntervalMs;
         var result = new SnapshotChunk[request.Indices.Length];
         for (int i = 0; i < result.Length; i++)
         {
@@ -269,17 +313,19 @@ public sealed class FrameCache
             Buffer.BlockCopy(frame.Packed, offset, payload, 0, payload.Length);
             result[i] = new SnapshotChunk(request.Sequence, index, total, payload);
         }
+
         return result;
     }
 }
 
 internal sealed class TransportClock
 {
-    private double previous;
+    private double _previous;
+
     public void Advance(double nowMs)
     {
-        if (double.IsNaN(nowMs) || double.IsInfinity(nowMs) || nowMs < previous)
+        if (double.IsNaN(nowMs) || double.IsInfinity(nowMs) || nowMs < _previous)
             throw new ArgumentOutOfRangeException(nameof(nowMs), "Use nonnegative monotonic milliseconds");
-        previous = nowMs;
+        _previous = nowMs;
     }
 }

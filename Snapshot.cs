@@ -116,11 +116,11 @@ public static class SnapshotCodec
     private static string ReadString(BinaryReader reader, int maxLength)
     {
         uint length = 0;
-        for (int shift = 0; ; shift += 7)
+        for (int index = 0; index < 5; index++)
         {
             byte part = reader.ReadByte();
-            if (shift == 28 && part > 7) throw new InvalidDataException("Invalid string length prefix");
-            length |= (uint)(part & 127) << shift;
+            if (index == 4 && part > 7) throw new InvalidDataException("Invalid string length prefix");
+            length |= (uint)(part & 127) << (index * 7);
             if ((part & 128) == 0) break;
         }
         // Bound allocation before reading bytes, then bound UTF-16 length as before.

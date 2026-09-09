@@ -70,6 +70,8 @@ public static class SnapshotTests
         {
             Reject(Replace(field, new byte[] { 255, 255, 255, 255, 7 }), field + " huge length");
             Reject(Replace(field, new byte[] { 128, 128, 128, 128, 128 }), field + " unterminated prefix");
+            Reject(Replace(field, new byte[] { 128, 128, 128, 128, 128, 0 }), field + " six-byte prefix");
+            Reject(Replace(field, new byte[] { 128, 128, 128, 128, 255, 0 }), field + " fifth-byte overflow with continuation");
             Reject(Replace(field, new byte[] { 255, 255, 255, 255, 8 }), field + " overflowing prefix");
             Reject(Replace(field, new byte[] { 1, 255 }), field + " invalid UTF-8");
             Reject(Replace(field, new byte[] { 1, 194 }), field + " truncated UTF-8 sequence");
