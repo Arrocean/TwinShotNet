@@ -19,12 +19,14 @@ public sealed partial class Plugin
     private int _lastBroadcastCoins = -1;
     private byte _lastSent;
 
-    private void ConfigureGame(int count, Theme theme, int level)
+    private void ConfigureGame(int count, Theme theme, LevelId level)
     {
         Game.isUsingTouchControls = false;
         Game.playerSkins = _skins.Take(count).Select(s => (Player.Skin)s).ToArray();
         Game.themeChoice = theme;
-        Game.levelId = new LevelId(theme, level);
+        // 直接使用权威 LevelId。随机主题的 themeChoice 是 RandomDeluxe/RandomClassic，
+        // 而 new LevelId(themeChoice, n) 会命中游戏内部的 "invalid theme" 异常 (F1)。
+        Game.levelId = level;
     }
 
     internal void StartSelectedMatch(Theme theme, LevelId level)
@@ -32,11 +34,17 @@ public sealed partial class Plugin
         _started = true;
         _themePhase = false;
         foreach (var input in _inputs) input.Clear();
+        // 选关期间可能有 peer 掉线或新 peer 接入：开局前重排槽位并重算人数，
+        // 否则 _players 与槽位号不一致会让客户端拒绝 match 包或产生空槽玩家 (F2/F3)。
+        RepackRemoteSlots();
+        _players = Math.Max(1, HighestOccupiedSlot());
         foreach (var entry in _peers)
         {
             var writer = new NetDataWriter();
             writer.Put((byte)8);
-            writer.Put((byte)theme);
+            // 只发送具体主题：客户端会用 (theme, 关内序号) 重建 LevelId，
+            // 随机主题必须在这里解析成具体主题，否则客户端构造会抛异常 (F1)。
+            writer.Put((byte)level.Theme);
             writer.Put(level.LevelNumberWithinTheme);
             writer.Put((byte)_players);
             writer.Put((byte)(entry.Value + 1));
@@ -44,7 +52,7 @@ public sealed partial class Plugin
             entry.Key.Send(writer, DeliveryMethod.ReliableOrdered);
         }
 
-        ConfigureGame(_players, theme, level.LevelNumberWithinTheme);
+        ConfigureGame(_players, theme, level);
         SceneManager.LoadScene("Game");
         _visible = false;
         _status = "Host / P1";
@@ -162,9 +170,11 @@ public sealed partial class Plugin
     internal void ApplyInput(int number)
     {
         int index = number - 1;
-        // P1 uses native input; this path only suppresses it while the panel is open or unfocused.
-        byte value = _started && index != 0 ? _inputs[index].Advance() : (byte)0;
-        // 先消费输入队列，再比较上一帧，保持短按边沿及原生 P1 输入顺序。
+        if (index < 0 || index >= 4) return;
+        // 只有远端槽位由网络队列驱动；本地玩家一律走原生输入，
+        // 走到这里说明面板打开或窗口失焦，写 0 抑制而不是覆盖成本地队列 (F13)。
+        byte value = _started && _remoteSlot[index] ? _inputs[index].Advance() : (byte)0;
+        // 先消费输入队列，再比较上一帧，保持短按边沿及原生输入顺序。
         byte pressed = (byte)(value & ~_applied[index]);
         _applied[index] = value;
         var c = GameInput.Player(number);

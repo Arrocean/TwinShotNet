@@ -15,7 +15,9 @@ internal static class InputPatch
     {
         if (Plugin.Instance == null || !Plugin.Instance.isActiveAndEnabled || !Plugin.Instance.Hosting ||
             Plugin.Instance.InLobby || Game.instance == null) return true;
-        if (number == 1 && !Plugin.Instance.PanelVisible && Application.isFocused) return true;
+        // 远端槽位始终由网络队列驱动；本地槽位（含主机 P2-P4）在面板关闭且窗口聚焦时走原生输入 (F13)。
+        if (!Plugin.Instance.IsRemoteSlot(number - 1) && !Plugin.Instance.PanelVisible && Application.isFocused)
+            return true;
         Plugin.Instance.ApplyInput(number);
         return false;
     }

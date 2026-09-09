@@ -63,6 +63,15 @@ static class PacketTests
             var match = (byte[])cases[6].body.Clone(); match[index] = 255;
             Check(!PacketValidation.IsValid(8, match), "Invalid match field");
         }
+        // 随机主题（RandomDeluxe=8 / RandomClassic=9）不能上线：客户端用 (theme, 关内序号)
+        // 构造 LevelId，而游戏构造函数只接受具体主题，否则会抛异常并断开连接 (F1)。
+        foreach (byte theme in new byte[] { 0, 7 })
+            Check(PacketValidation.IsValid(8, new byte[] { theme, 1, 0, 0, 0, 2, 2, 0, 1 }), "Concrete theme " + theme);
+        foreach (byte theme in new byte[] { 8, 9, 255 })
+            Check(!PacketValidation.IsValid(8, new byte[] { theme, 1, 0, 0, 0, 2, 2, 0, 1 }),
+                "Random theme rejected " + theme);
+        Check(!PacketValidation.IsValid(8, new byte[] { 0, 0, 0, 0, 0, 2, 2, 0, 1 }), "Level zero rejected");
+        Check(!PacketValidation.IsValid(8, new byte[] { 0, 101, 0, 0, 0, 2, 2, 0, 1 }), "Level 101 rejected");
         Check(!PacketValidation.IsValid(10, BitConverter.GetBytes(-1)), "Negative coins");
         Check(!PacketValidation.IsValid(3, Array.Empty<byte>()), "Obsolete packet");
         Check(!PacketValidation.IsValid(4, new byte[Wire.ChunkSize + 9]), "Oversized chunk");

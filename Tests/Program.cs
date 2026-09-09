@@ -14,6 +14,8 @@ static class Program
     {
         SnapshotTests.Run();
         PacketTests.Run();
+        SlotTests.Run();
+        Plugin.RunLobbySequenceTests();
         var a = new InputSlot(); var b = new InputSlot();
         a.Receive(16); a.Receive(0);
         Check(a.Advance() == 16 && a.Advance() == 0, "Short tap preserved");
@@ -31,12 +33,12 @@ static class Program
         Check(assembler.Add(2, 0, 9999, new byte[] { 1 }) == null, "Allocation bound");
         Check(assembler.Add(2, 3, 2, new byte[] { 1 }) == null, "Index bound");
         TransportTests();
-        Console.WriteLine($"{checks} checks passed");
+        Console.WriteLine($"Input and transport: {checks} checks passed");
     }
 
     static void TransportTests()
     {
-        Check(Wire.Version == "TwinShotNet-0.5.0", "Protocol version");
+        Check(Wire.Version == "TwinShotNet-0.5.1", "Protocol version");
         var raw = new byte[12000];
         new Random(7).NextBytes(raw);
         var packed = Wire.Pack(raw);

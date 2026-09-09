@@ -1,6 +1,6 @@
 # TwinShotNet
 
-Experimental BepInEx 5 plugin that adds host-authoritative UDP multiplayer to Twin Shot Deluxe. The current plugin and protocol version is **0.5.0**. All players must use the same plugin and game build; mismatched builds are rejected during connection.
+Experimental BepInEx 5 plugin that adds host-authoritative UDP multiplayer to Twin Shot Deluxe. The current plugin and protocol version is **0.5.1**. All players must use the same plugin and game build; mismatched builds are rejected during connection.
 
 ## Architecture
 
@@ -13,8 +13,9 @@ The codebase layout, lifecycle, protocol constraints, and test coverage are docu
 - Host and peers use the game's native character-selection/ready UI after the room is opened. Remote players are assigned to the next available player slot after the host's local players.
 - Players can occupy slots, choose Pink, Orange, Purple, or Blue, and ready up before the host starts.
 - Joining or leaving before the match clears readiness only for the affected slot; the host cannot start until every occupied slot is ready.
-- The host continues through the native theme and level-selection flow. Peers enter a synchronized, input-locked view and load the exact theme and level confirmed by the host.
-- Host P1 keeps the original Rewired keyboard/controller bindings. Clients use arrows or WASD, Space/Z to jump, and X/J to shoot.
+- The host sees remote players' joined/ready state in the native character-select screen, and the remaining remote players are repacked into the lowest free slot when someone leaves before the match starts.
+- The host continues through the native theme and level-selection flow. Peers enter a synchronized, input-locked view and load the exact theme and level confirmed by the host. Random theme choices are resolved to a concrete theme before the match packet is sent.
+- Host local players keep the original Rewired keyboard/controller bindings. Clients use arrows or WASD, Space/Z to jump, and X/J to shoot.
 - Host state is sent as compressed visual snapshots. Clients do not independently simulate combat, collision, enemy AI, or random events.
 - Snapshot packets are chunked over UDP. Clients request missing chunks with bounded NACK repair; the host keeps a short, aggregate repair cache.
 - Host score, hit points, alive state, and powerup state are sent to clients and applied to the in-game player HUD. Completion-panel lifetime coins are synchronized during the native result sequence.
@@ -27,7 +28,7 @@ This remains an experimental prototype, not a finished release. The client rende
 
 The snapshot currently includes eligible dynamic `SpriteRenderer` objects and player HUD state. Static map tiles and UI-layer renderers are kept local to the client's matching level and are not copied as dynamic objects. Mesh water, special materials, particle effects, sound timing, some UI, sorting groups, final-level transitions, reconnect-after-start, and every scene lifecycle have not been fully regression-tested. Ambiguous sprite fallback matches are deliberately omitted rather than replaced with a potentially incorrect asset; the client status line reports missing sprites.
 
-The host selects the theme and level through the native game menus, using the host's save data for the native Continue/level-selection behavior. Skin selection currently exposes four base colors, not unlockable skins. Public UDP traffic is not encrypted, so use a unique room key and do not reuse an account password.
+The host selects the theme and level through the native game menus, using the host's save data for the native Continue/level-selection behavior. Skin selection currently exposes four base colors, not unlockable skins; a host local player who picks an unlockable skin falls back to that player's last base color. Public UDP traffic is not encrypted, so use a unique room key and do not reuse an account password.
 
 ## Installation
 
@@ -53,7 +54,7 @@ dotnet build -c Release -p:Deploy=true
 dotnet run --project Tests/Tests.csproj -c Release
 ```
 
-The deploy target copies the plugin DLL and `LiteNetLib.dll` to the default local game installation. For validation without deploying, use `dotnet build TwinShotNet.csproj -c Release -p:Deploy=false`. The automated suite currently contains 395 checks: 232 snapshot, 103 packet-boundary, and 60 input/transport checks.
+The deploy target copies the plugin DLL and `LiteNetLib.dll` to the default local game installation. For validation without deploying, use `dotnet build TwinShotNet.csproj -c Release -p:Deploy=false`. The automated suite currently contains 417 checks: 232 snapshot, 110 packet-boundary, 15 slot-assignment, and 60 input/transport checks.
 
 ## Start a session
 
@@ -83,10 +84,10 @@ This only patches managed startup code after BepInEx loads. It does not bypass n
 
 ## Troubleshooting
 
-- Check `BepInEx/LogOutput.log` for `TwinShotNet 0.5.0 loaded`.
+- Check `BepInEx/LogOutput.log` for `TwinShotNet 0.5.1 loaded`.
 - `Unknown Host` usually means the address contains `https://` or the endpoint is not a DNS hostname. Use hostname and port in separate fields.
 - A timeout usually means the endpoint is not UDP, the port mapping is wrong, Windows Firewall is blocking the game, or the host is behind CGNAT.
-- All participants must update together when the protocol version changes. Version `0.5.0` is incompatible with older protocol builds.
+- All participants must update together when the protocol version changes. Version `0.5.1` is incompatible with older protocol builds.
 - `missing sprites` in the client status line indicates assets that were not safely matched, not a gameplay simulation failure.
 - Stop the session from the panel before changing rooms. Joining after the match has started is not supported.
 

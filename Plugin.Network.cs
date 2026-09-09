@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Linq;
 using LiteNetLib;
 using LiteNetLib.Utils;
 using UnityEngine;
@@ -49,10 +48,13 @@ public sealed partial class Plugin
         }
 
         _host = asHost;
-        _hostLocalPlayers = asHost ? HostLocalPlayerCount() : 1;
         Array.Clear(_ready, 0, 4);
         Array.Clear(_occupied, 0, 4);
-        _occupied[0] = asHost;
+        Array.Clear(_localOccupied, 0, 4);
+        Array.Clear(_remoteSlot, 0, 4);
+        _occupied[0] = _localOccupied[0] = asHost;
+        // 主机可能在按 Host 之前就已经加入了本地 P2-P4，先读取一次避免把它们错分给远端 (F2)。
+        if (asHost) SyncHostLocalState();
         _visible = true;
         _oldBackground = Application.runInBackground;
         _backgroundOwned = true;
@@ -61,7 +63,8 @@ public sealed partial class Plugin
         _network = new NetManager(listener) { AutoRecycle = true, IPv6Enabled = false, DisconnectTimeout = 5000 };
         listener.ConnectionRequestEvent += request =>
         {
-            if (!_host || _started || _peers.Count >= 3)
+            // 选关阶段加入会让冻结的 _players 与新槽位不一致，必须一并拒绝 (F3)。
+            if (!_host || _started || _themePhase || _peers.Count >= 3)
             {
                 request.Reject();
                 return;
@@ -73,26 +76,38 @@ public sealed partial class Plugin
         {
             if (_host)
             {
-                _hostLocalPlayers = HostLocalPlayerCount();
-                // 远端槽位从本地主机人数之后分配，保留 0 作为无可用槽位的判定。
-                int slot = Enumerable.Range(_hostLocalPlayers, 4 - _hostLocalPlayers)
-                    .FirstOrDefault(n => !_peers.Values.Contains(n));
-                if (slot == 0 || _started)
+                if (_started || _themePhase)
+                {
+                    peer.Disconnect();
+                    return;
+                }
+
+                // 先刷新本地箱子占用，避免把本地玩家正在使用的槽位分给远端 (F2)。
+                SyncHostLocalState();
+                // 远端槽位取未被本地箱子占用的最低空槽，0 号槽位始终保留给主机 P1。
+                int slot = 0;
+                for (int i = 1; i < 4; i++)
+                {
+                    if (_remoteSlot[i] || _localOccupied[i]) continue;
+                    slot = i;
+                    break;
+                }
+
+                if (slot == 0)
                 {
                     peer.Disconnect();
                     return;
                 }
 
                 _peers.Add(peer, slot);
+                _remoteSlot[slot] = true;
                 _occupied[slot] = true;
                 _ready[slot] = false;
                 _inputs[slot].Clear();
+                _applied[slot] = 0;
                 _lastInput[slot] = Time.realtimeSinceStartup;
-                var writer = new NetDataWriter();
-                writer.Put((byte)1);
-                writer.Put((byte)(slot + 1));
-                peer.Send(writer, DeliveryMethod.ReliableOrdered);
-                _status = $"Hosting: {_hostLocalPlayers + _peers.Count}/4 players";
+                SendSlotAssignment(peer, slot);
+                _status = $"Hosting: {LocalPlayerCount() + _peers.Count}/4 players";
                 BroadcastLobby();
             }
             else
@@ -108,9 +123,13 @@ public sealed partial class Plugin
                 if (_peers.TryGetValue(peer, out int slot))
                 {
                     _inputs[slot].Clear();
+                    _applied[slot] = 0;
                     _peers.Remove(peer);
+                    _remoteSlot[slot] = false;
                     _occupied[slot] = false;
                     _ready[slot] = false;
+                    // 立刻回收空出的槽位，否则开局时 assigned 可能超过 players (F2)。
+                    RepackRemoteSlots();
                     if (!_started) BroadcastLobby();
                 }
 
@@ -234,7 +253,8 @@ public sealed partial class Plugin
             return;
         }
 
-        if (type == 1)
+        // 槽位分配只在开局前有效：开局后重分配会让本地槽位与输入路由错位 (F8)。
+        if (type == 1 && !_started)
         {
             _assigned = reader.GetByte();
             if (_assigned < 2 || _assigned > 4) throw new InvalidDataException("Invalid player slot");
@@ -248,8 +268,18 @@ public sealed partial class Plugin
             int level = reader.GetInt();
             if (!Enum.IsDefined(typeof(Theme), theme)) throw new InvalidDataException("Invalid match theme");
             if (level < 1 || level > 100) throw new InvalidDataException("Invalid match level");
-            var selectedLevel = new LevelId(theme, level);
-            if (!selectedLevel.DoesExist()) throw new InvalidDataException("Host selected an unavailable level");
+            // PacketValidation 已把主题限制为具体主题，这里构造不会再触发游戏内部异常 (F1)。
+            LevelId selectedLevel;
+            try
+            {
+                selectedLevel = new LevelId(theme, level);
+            }
+            catch (Exception ex)
+            {
+                throw new InvalidDataException("Invalid match level", ex);
+            }
+
+            if (!LevelExists(selectedLevel)) throw new InvalidDataException("Host selected an unavailable level");
             _players = reader.GetByte();
             _assigned = reader.GetByte();
             if (_players < 2 || _players > 4 || _assigned < 2 || _assigned > _players)
@@ -258,7 +288,7 @@ public sealed partial class Plugin
             for (int i = 0; i < _players; i++) _skins[i] = reader.GetByte();
             _started = true;
             _themePhase = false;
-            ConfigureGame(_players, theme, level);
+            ConfigureGame(_players, theme, selectedLevel);
             SceneManager.LoadScene("Game");
             _lastFrame = Time.realtimeSinceStartup;
         }
@@ -290,6 +320,21 @@ public sealed partial class Plugin
                 _pendingFrame = Wire.Unpack(frame);
                 _lastFrame = Time.realtimeSinceStartup;
             }
+        }
+    }
+
+    // 游戏内 DoesExist() 走 Resources.Load，路径异常时会抛原生异常；
+    // 这里统一转成“不可用”而不是让整个连接被异常处理逻辑断开 (F8)。
+    private bool LevelExists(LevelId level)
+    {
+        try
+        {
+            return level.DoesExist();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning("Level availability check failed: " + ex.Message);
+            return false;
         }
     }
 

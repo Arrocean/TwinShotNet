@@ -10,5 +10,8 @@
     <Compile Include="../Transport/SnapshotChunk.cs" Link="Transport/SnapshotChunk.cs" />
     <Compile Include="../Snapshot.cs" Link="Snapshot.cs" />
     <Compile Include="../PacketValidation.cs" Link="PacketValidation.cs" />
+    <Compile Include="../SlotMap.cs" Link="SlotMap.cs" />
+    <Compile Include="../Plugin.Lobby.cs" Link="Plugin.Lobby.cs" />
+    <Compile Include="../Plugin.Network.cs" Link="Plugin.Network.cs" />
   </ItemGroup>
 </Project>

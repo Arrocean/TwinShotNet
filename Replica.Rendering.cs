@@ -84,10 +84,8 @@ public sealed partial class Replica
             if (visual.GameObject != null)
                 UnityEngine.Object.Destroy(visual.GameObject);
         _visuals.Clear();
-        // 换关与会话清理共用此入口，HUD 分数及失败记录必须与视觉对象一起重置。
-        _displayedScores.Clear();
+        // 换关与会话清理共用此入口，HUD 失败记录必须与视觉对象一起重置。
         _failedPlayerHud.Clear();
-        _failedScoreUi.Clear();
     }
 
     private static int StableVisualId(SpriteRenderer renderer)

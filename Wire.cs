@@ -7,7 +7,7 @@ namespace TwinShotNet;
 
 public static class Wire
 {
-    public const string Version = "TwinShotNet-0.5.0";
+    public const string Version = "TwinShotNet-0.5.1";
     public const int ChunkSize = 900;
     public const int MaxPacked = 512 * 1024;
     public const int MaxRaw = 2 * 1024 * 1024;
@@ -20,6 +20,9 @@ public static class Wire
     public const int MaxNackAttempts = 4;
     public const int MaxRepairChunks = 32;
     public const byte NackPacketType = 7;
+    // Theme 枚举中最后一个具体主题（Bonus）。RandomDeluxe/RandomClassic 只存在于菜单层，
+    // 不能出现在线上，因为客户端会用它构造 LevelId (F1)。
+    public const byte MaxConcreteTheme = 7;
     public static double NowMilliseconds => Stopwatch.GetTimestamp() * (1000.0 / Stopwatch.Frequency);
 
     // NACK body, after packet type 7: little-endian int32 sequence,

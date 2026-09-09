@@ -34,7 +34,8 @@ public static class PacketValidation
                 if (body.Length < 9) return false;
                 int level = BinaryPrimitives.ReadInt32LittleEndian(body.AsSpan(1, 4));
                 int players = body[5];
-                if (level < 1 || level > 100 || players < 2 || players > 4 ||
+                // 主题必须是具体主题：RandomDeluxe/RandomClassic 无法参与 LevelId 构造 (F1)。
+                if (body[0] > Wire.MaxConcreteTheme || level < 1 || level > 100 || players < 2 || players > 4 ||
                     body[6] < 2 || body[6] > players || body.Length != 7 + players) return false;
                 for (int i = 7; i < body.Length; i++) if (body[i] > 3) return false;
                 return true;

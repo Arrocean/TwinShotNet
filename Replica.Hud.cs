@@ -8,10 +8,7 @@ namespace TwinShotNet;
 public sealed partial class Replica
 {
     private readonly Dictionary<Type, MethodInfo> _advanceMethods = new();
-    private readonly Dictionary<Type, FieldInfo> _scoreFields = new();
     private readonly HashSet<int> _failedPlayerHud = [];
-    private readonly HashSet<int> _failedScoreUi = [];
-    private readonly Dictionary<int, int> _displayedScores = new();
     public string Hud { get; private set; } = "Waiting for state";
 
     private MethodInfo GetAdvanceMethod(Type type)
@@ -24,15 +21,8 @@ public sealed partial class Replica
         return method;
     }
 
-    private FieldInfo GetScoreField(Type type)
-    {
-        if (_scoreFields.TryGetValue(type, out var field)) return field;
-        _scoreFields.Add(type, null);
-        field = type.GetField("score", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-        _scoreFields[type] = field;
-        return field;
-    }
-
+    // UIForPlayer.Advance() 内部会按 Player.score 重写分数文本与分数条，
+    // 因此分数同步不需要（也不应该）单独调用带参数的子控件方法 (F6)。
     private void UpdatePlayerHud(Player player)
     {
         if (_failedPlayerHud.Contains(player.number)) return;
@@ -46,26 +36,6 @@ public sealed partial class Replica
             // Do not repeatedly invoke a broken HUD until the level/session is cleared.
             _failedPlayerHud.Add(player.number);
             Debug.LogWarning("[TwinShotNet] Player HUD update unavailable: " + ex.Message);
-        }
-    }
-
-    private void UpdateScoreUi(Player player, int score)
-    {
-        _displayedScores.TryGetValue(player.number, out int oldScore);
-        // Advance 可能先改变分数再抛异常，所以必须先记账；后续快照也不得重放失败的分数增量。
-        _displayedScores[player.number] = score;
-        if (oldScore == score || _failedScoreUi.Contains(player.number)) return;
-        try
-        {
-            object playerUi = Game.instance.ui.Player(player);
-            var scoreUi = playerUi == null ? null : GetScoreField(playerUi.GetType())?.GetValue(playerUi);
-            var advance = scoreUi == null ? null : GetAdvanceMethod(scoreUi.GetType());
-            if (advance != null) advance.Invoke(scoreUi, new object[] { (float)(score - oldScore) });
-        }
-        catch (Exception ex)
-        {
-            _failedScoreUi.Add(player.number);
-            Debug.LogWarning("[TwinShotNet] Score UI update unavailable: " + ex.Message);
         }
     }
 }

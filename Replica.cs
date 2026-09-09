@@ -46,6 +46,9 @@ public sealed partial class Replica
         renderers.Clear();
         visualIds.Clear();
         int uiLayer = LayerMask.NameToLayer("UI");
+        // 每条 visual 的编码上限（id + 两个字符串前缀/长度 + 6 float + 颜色 + order + 2 bool）。
+        const int maxVisualBytes = 4 + 5 + SnapshotCodec.MaxSpriteLength + 24 + 4 + 5 + SnapshotCodec.MaxLayerLength + 4 +
+                                   2;
         foreach (SpriteRenderer renderer in found)
         {
             if (renderer == null || !renderer.enabled) continue;
@@ -58,7 +61,8 @@ public sealed partial class Replica
                 !ValidFloat(transform.eulerAngles.z)) continue;
             if (!visualIds.Add(StableVisualId(renderer))) continue;
             renderers.Add(renderer);
-            if (renderers.Count >= SnapshotCodec.MaxVisuals) break;
+            // 条数和字节数都要设上限：只限条数时大关卡仍会突破 Wire.MaxRaw 让打包抛异常 (F7)。
+            if (renderers.Count >= SnapshotCodec.MaxVisuals || stream.Length + maxVisualBytes > Wire.MaxRaw) break;
         }
 
         writer.Write(renderers.Count);
@@ -142,7 +146,7 @@ public sealed partial class Replica
                 local.score = score;
                 local.alive = alive;
                 local.powerup = (Player.PowerupType)powerup;
-                UpdateScoreUi(local, score);
+                // 分数文本由 UIForPlayer.Advance 从 Player.score 重新推导，无需单独的分数 UI 调用 (F6)。
                 UpdatePlayerHud(local);
             }
 
@@ -174,7 +178,6 @@ public sealed partial class Replica
         _captureRenderers.Clear();
         _captureVisualIds.Clear();
         _advanceMethods.Clear();
-        _scoreFields.Clear();
         _indexedAssets = null;
         _indexedLevel = -1;
         _generation = 0;
